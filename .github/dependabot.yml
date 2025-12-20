@@ -3,37 +3,36 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule: { interval: "daily", time: "04:00" }
-    open-pull-requests-limit: 10
-    labels: ["dependencies", "github-actions"]
+    open-pull-requests-limit: 1
+    rebase-strategy: "auto"
+    labels: ["dependencies","github-actions"]
     groups:
-      actions:
+      all:
         patterns: ["*"]
   - package-ecosystem: "pip"
     directory: "/"
     schedule: { interval: "daily", time: "04:10" }
-    open-pull-requests-limit: 10
-    labels: ["dependencies", "python"]
+    open-pull-requests-limit: 1
+    rebase-strategy: "auto"
+    labels: ["dependencies","python"]
     groups:
-      py-minor-patch:
-        applies-to: "version-updates"
-        update-types: ["minor", "patch"]
-        patterns: ["*"]
-      py-security:
-        applies-to: "security-updates"
+      all:
         patterns: ["*"]
   - package-ecosystem: "docker"
     directory: "/"
     schedule: { interval: "daily", time: "04:15" }
-    open-pull-requests-limit: 5
-    labels: ["dependencies", "docker"]
+    open-pull-requests-limit: 1
+    rebase-strategy: "auto"
+    labels: ["dependencies","docker"]
     groups:
-      docker-images:
+      all:
         patterns: ["*"]
   - package-ecosystem: "docker-compose"
     directory: "/"
     schedule: { interval: "daily", time: "04:16" }
-    open-pull-requests-limit: 5
-    labels: ["dependencies", "docker-compose"]
+    open-pull-requests-limit: 1
+    rebase-strategy: "auto"
+    labels: ["dependencies","docker-compose"]
     groups:
-      compose:
+      all:
         patterns: ["*"]

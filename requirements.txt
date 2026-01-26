@@ -1,4 +1,4 @@
-python-telegram-bot==22.5
+python-telegram-bot==22.6
 aiohttp==3.13.3
 PyGithub==2.8.1
 dnspython==2.8.0

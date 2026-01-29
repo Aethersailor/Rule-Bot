@@ -3,7 +3,7 @@ aiohttp==3.13.3
 PyGithub==2.8.1
 dnspython==2.8.0
 loguru==0.7.3
-psutil==7.2.1
+psutil==7.2.2
 geoip2==5.2.0
 maxminddb==3.0.0
 publicsuffix2==2.20191221

@@ -1,6 +1,6 @@
 python-telegram-bot==22.7
 aiohttp==3.13.5
-PyGithub==2.9.0
+PyGithub==2.9.1
 dnspython==2.8.0
 loguru==0.7.3
 psutil==7.2.2

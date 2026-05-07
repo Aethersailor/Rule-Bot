@@ -5,7 +5,7 @@ updates:
     target-branch: "master"
     schedule:
       interval: "cron"
-      cronjob: "0 * * * *"
+      cronjob: "0 4 * * *"
       timezone: "Asia/Shanghai"
     open-pull-requests-limit: 100
     rebase-strategy: "auto"
@@ -15,7 +15,7 @@ updates:
     target-branch: "master"
     schedule:
       interval: "cron"
-      cronjob: "10 * * * *"
+      cronjob: "10 4 * * *"
       timezone: "Asia/Shanghai"
     open-pull-requests-limit: 100
     rebase-strategy: "auto"
@@ -25,7 +25,7 @@ updates:
     target-branch: "master"
     schedule:
       interval: "cron"
-      cronjob: "20 * * * *"
+      cronjob: "20 4 * * *"
       timezone: "Asia/Shanghai"
     open-pull-requests-limit: 100
     rebase-strategy: "auto"
@@ -35,7 +35,7 @@ updates:
     target-branch: "master"
     schedule:
       interval: "cron"
-      cronjob: "30 * * * *"
+      cronjob: "30 4 * * *"
       timezone: "Asia/Shanghai"
     open-pull-requests-limit: 100
     rebase-strategy: "auto"

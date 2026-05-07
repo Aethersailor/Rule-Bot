@@ -11,7 +11,7 @@ import re
 import threading
 import time
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Set, List, Pattern, Optional, Tuple, Dict, Any
 from loguru import logger
@@ -422,10 +422,11 @@ class DataManager:
         session = await self._get_session()
         current_meta = self._load_meta(meta_path)
         conditional_headers = {}
-        if current_meta.get("etag"):
-            conditional_headers["If-None-Match"] = current_meta["etag"]
-        if current_meta.get("last_modified"):
-            conditional_headers["If-Modified-Since"] = current_meta["last_modified"]
+        if dest_path.exists():
+            if current_meta.get("etag"):
+                conditional_headers["If-None-Match"] = current_meta["etag"]
+            if current_meta.get("last_modified"):
+                conditional_headers["If-Modified-Since"] = current_meta["last_modified"]
 
         for idx, url in enumerate(urls):
             try:
@@ -469,7 +470,7 @@ class DataManager:
                         "last_modified": response.headers.get("Last-Modified"),
                         "sha256": new_hash,
                         "size": size,
-                        "updated_at": datetime.utcnow().isoformat() + "Z",
+                        "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                         "source": url
                     }
                     self._save_meta(meta_path, meta)

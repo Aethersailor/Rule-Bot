@@ -3,6 +3,7 @@
 综合检查域名的各种信息
 """
 
+import asyncio
 from typing import Dict, List, Any, Optional
 from loguru import logger
 
@@ -46,7 +47,17 @@ class DomainChecker:
             
             # 1. 查询域名 IP
             logger.info(f"查询域名 {normalized_domain} 的 IP 地址...")
-            domain_ips = await self.dns_service.query_a_record(normalized_domain)
+            domain_ip_task = asyncio.create_task(
+                self.dns_service.query_a_record(normalized_domain)
+            )
+            second_level_ip_task = None
+            if second_level and second_level != normalized_domain:
+                logger.info(f"查询二级域名 {second_level} 的 IP 地址...")
+                second_level_ip_task = asyncio.create_task(
+                    self.dns_service.query_a_record(second_level)
+                )
+
+            domain_ips = await domain_ip_task
             result["domain_ips"] = domain_ips
             
             # 检查域名 IP 归属地
@@ -66,8 +77,7 @@ class DomainChecker:
             
             # 2. 如果不是二级域名，查询二级域名 IP
             if second_level and second_level != normalized_domain:
-                logger.info(f"查询二级域名 {second_level} 的 IP 地址...")
-                second_level_ips = await self.dns_service.query_a_record(second_level)
+                second_level_ips = await second_level_ip_task
                 result["second_level_ips"] = second_level_ips
                 
                 if second_level_ips:
@@ -96,8 +106,11 @@ class DomainChecker:
                 total_ns_count = 0
                 ns_summary = {}  # {ns_server: {"china": count, "foreign": count}}
                 
-                for ns in ns_servers:
-                    ns_ips = await self.dns_service.query_a_record(ns)
+                ns_ip_results = await asyncio.gather(
+                    *(self.dns_service.query_a_record(ns) for ns in ns_servers)
+                )
+
+                for ns, ns_ips in zip(ns_servers, ns_ip_results):
                     result["ns_ips"].extend(ns_ips)
                     
                     ns_summary[ns] = {"china": 0, "foreign": 0, "ips": []}
@@ -150,19 +163,13 @@ class DomainChecker:
             second_level_china = check_result["second_level_china_status"]
             ns_china = check_result["ns_china_status"]
             
-            has_second_level = check_result["second_level_domain"] != check_result["normalized_domain"]
-            
             # 决定添加哪个域名（始终使用二级域名）
             target_domain = check_result["second_level_domain"] if check_result["second_level_domain"] else check_result["normalized_domain"]
             domain_type = "二级域名"
             
             # 判断是否有中国 IP（优先二级域名 IP）
             has_china_ip = second_level_china or domain_china
-            
-            # 如果没有中国 IP 也没有中国 NS，不推荐添加
-            if not has_china_ip and not ns_china:
-                target_domain = None
-            
+
             # 根据检查结果生成建议
             if has_china_ip:
                 return f"✅ 添加{domain_type} {target_domain}：域名 IP 在中国大陆"

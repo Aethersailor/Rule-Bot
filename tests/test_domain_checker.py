@@ -1,5 +1,7 @@
+import asyncio
 import os
 import sys
+import time
 import unittest
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
@@ -52,6 +54,46 @@ class DummyGeoIPServiceNoChina:
         }
 
 
+class DummyDNSServiceConcurrentNS:
+    async def query_a_record(self, domain: str, use_edns_china: bool = True):
+        if domain == "example.org":
+            return ["1.1.1.1"]
+        if domain == "ns1.example.org":
+            await asyncio.sleep(0.05)
+            return ["2.2.2.2"]
+        if domain == "ns2.example.org":
+            await asyncio.sleep(0.05)
+            return ["3.3.3.3"]
+        return []
+
+    async def query_ns_records(self, domain: str):
+        return ["ns1.example.org", "ns2.example.org"]
+
+
+class DummyGeoIPServiceMixed:
+    def get_location_info(self, ip: str):
+        if ip == "1.1.1.1":
+            return {
+                "ip": ip,
+                "country_code": "CN",
+                "country_name": "China",
+                "is_china": True,
+            }
+        if ip == "2.2.2.2":
+            return {
+                "ip": ip,
+                "country_code": "CN",
+                "country_name": "China",
+                "is_china": True,
+            }
+        return {
+            "ip": ip,
+            "country_code": "US",
+            "country_name": "United States",
+            "is_china": False,
+        }
+
+
 class TestDomainChecker(unittest.IsolatedAsyncioTestCase):
     async def test_check_domain_comprehensive_china_ip(self):
         checker = DomainChecker(DummyDNSService(), DummyGeoIPService())
@@ -69,6 +111,19 @@ class TestDomainChecker(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(checker.should_reject(result))
         self.assertIsNone(checker.get_target_domain_to_add(result))
+        self.assertIn("example.net", result["recommendation"])
+        self.assertNotIn("None", result["recommendation"])
+
+    async def test_ns_ip_queries_run_concurrently(self):
+        checker = DomainChecker(DummyDNSServiceConcurrentNS(), DummyGeoIPServiceMixed())
+
+        start = time.perf_counter()
+        result = await checker.check_domain_comprehensive("example.org")
+        duration = time.perf_counter() - start
+
+        self.assertTrue(result["ns_china_status"])
+        self.assertIn("NS 服务器: 1/2 个 IP 在中国大陆", result["details"])
+        self.assertLess(duration, 0.09)
 
 
 if __name__ == '__main__':

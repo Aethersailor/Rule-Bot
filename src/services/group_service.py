@@ -22,6 +22,16 @@ class GroupService:
     def is_group_check_enabled(self) -> bool:
         """检查是否启用群组验证"""
         return self._group_check_enabled
+
+    @staticmethod
+    def _escape_markdown(text: str) -> str:
+        if not text:
+            return text
+
+        special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '!']
+        for char in special_chars:
+            text = text.replace(char, f'\\{char}')
+        return text
     
     async def check_user_in_group(self, user_id: int) -> Optional[bool]:
         """检查用户是否在指定群组中"""
@@ -53,10 +63,10 @@ class GroupService:
         if not self._group_check_enabled:
             return ""
         
-        message = f"🔒 **使用限制**\n\n"
+        message = f"🔒 *使用限制*\n\n"
         message += f"为了使用本机器人，请先加入我们的群组：\n\n"
-        message += f"📢 **群组名称：** {self.config.REQUIRED_GROUP_NAME}\n"
-        message += f"🔗 **加入链接：** {self.config.REQUIRED_GROUP_LINK}\n\n"
+        message += f"📢 *群组名称：* {self._escape_markdown(self.config.REQUIRED_GROUP_NAME)}\n"
+        message += f"🔗 *加入链接：* {self._escape_markdown(self.config.REQUIRED_GROUP_LINK)}\n\n"
         message += f"加入后请重新尝试使用机器人功能。"
         
         return message 

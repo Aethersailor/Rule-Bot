@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -59,6 +60,54 @@ class TestDataManagerScheduling(unittest.IsolatedAsyncioTestCase):
             await manager.close()
             self.assertTrue(session1.closed)
             self.assertIsNone(manager._session)
+
+    async def test_download_without_local_file_ignores_stale_meta_headers(self):
+        class FakeResponse:
+            def __init__(self, body: bytes):
+                self.status = 200
+                self.headers = {}
+                self.content = self
+                self._body = body
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def iter_chunked(self, chunk_size: int):
+                yield self._body
+
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+
+            def get(self, url, headers=None):
+                self.calls.append({"url": url, "headers": headers or {}})
+                return FakeResponse(b"payload")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = _build_config(temp_dir, interval=3600)
+            manager = DataManager(config)
+            fake_session = FakeSession()
+
+            meta = {
+                "etag": "stale-etag",
+                "last_modified": "Wed, 01 Jan 2025 00:00:00 GMT",
+            }
+            manager.geoip_meta.write_text(json.dumps(meta), encoding="utf-8")
+
+            with patch.object(manager, "_get_session", AsyncMock(return_value=fake_session)):
+                changed = await manager._download_with_fallback(
+                    ["https://example.test/geoip.mmdb"],
+                    manager.geoip_file,
+                    "geoip",
+                    manager.geoip_meta,
+                )
+
+            self.assertTrue(changed)
+            self.assertEqual(fake_session.calls[0]["headers"], {})
+            self.assertTrue(manager.geoip_file.exists())
 
 
 if __name__ == "__main__":

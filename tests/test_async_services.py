@@ -92,5 +92,41 @@ class TestServices(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.repo.update_file.call_args.kwargs.get("branch"), "dev")
         print("Async add_domain_to_rules executed successfully.")
 
+    async def test_github_service_remove_domain_preserves_section_marker(self):
+        config = MagicMock(spec=Config)
+        config.GITHUB_TOKEN = "token"
+        config.DIRECT_RULE_FILE = "rule.list"
+        config.GITHUB_REPO = "test/repo"
+        config.GITHUB_COMMIT_NAME = "bot"
+        config.GITHUB_COMMIT_EMAIL = "bot@test.com"
+        config.GITHUB_BRANCH = "dev"
+
+        with patch.object(GitHubService, "_initialize_repo"):
+            service = GitHubService(config)
+        service.repo = MagicMock()
+
+        existing_content = (
+            "# 以下域名待提交 PR\n"
+            "DOMAIN-SUFFIX,example.com\n"
+            "# add by Telegram user: someone / Date: 2026-05-07 00:00:00\n"
+            "DOMAIN-SUFFIX,other.com\n"
+        )
+        encoded_content = base64.b64encode(existing_content.encode("utf-8")).decode("utf-8")
+        mock_file = MagicMock()
+        mock_file.content = encoded_content
+        mock_file.sha = "old_sha"
+        service.repo.get_contents.return_value = mock_file
+
+        mock_commit = MagicMock()
+        mock_commit.sha = "new_sha"
+        service.repo.update_file.return_value = {"commit": mock_commit}
+
+        result = await service.remove_domain_from_rules("example.com", "user")
+
+        self.assertTrue(result["success"])
+        updated_content = service.repo.update_file.call_args.args[2]
+        self.assertIn("# 以下域名待提交 PR", updated_content)
+        self.assertIn("DOMAIN-SUFFIX,other.com", updated_content)
+
 if __name__ == '__main__':
     unittest.main()

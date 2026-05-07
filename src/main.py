@@ -7,10 +7,14 @@ Telegram 机器人用于管理 GitHub 规则文件
 import asyncio
 import os
 import sys
-import resource
 import psutil
 import time
 from loguru import logger
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - Windows 等平台无此模块
+    resource = None
 
 from .bot import RuleBot
 from .config import Config
@@ -49,6 +53,10 @@ def _configure_logging():
 
 def set_memory_limit():
     """设置内存限制（默认软限制 256 MB，硬限制 512 MB）"""
+    if resource is None:
+        logger.info("当前平台不支持 resource 模块，跳过内存限制设置")
+        return
+
     try:
         soft_mb = int(os.getenv("MEMORY_SOFT_LIMIT_MB", "256"))
         hard_mb = int(os.getenv("MEMORY_HARD_LIMIT_MB", str(soft_mb * 2)))

@@ -10,7 +10,7 @@ import time
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from loguru import logger
-from github import Github, GithubException, InputGitAuthor
+from github import Auth, Github, GithubException, InputGitAuthor
 
 from ..config import Config
 from ..utils.cache import TTLCache
@@ -22,13 +22,25 @@ class GitHubService:
     
     def __init__(self, config: Config):
         self.config = config
-        self.github = Github(config.GITHUB_TOKEN)
+        self.github = Github(auth=Auth.Token(config.GITHUB_TOKEN))
         self.repo = None
         self._file_cache = TTLCache(
             getattr(config, "GITHUB_FILE_CACHE_SIZE", 0),
             getattr(config, "GITHUB_FILE_CACHE_TTL", 0)
         )
         self._initialize_repo()
+
+    @staticmethod
+    def _is_managed_rule_comment(line: str) -> bool:
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            return False
+
+        normalized = stripped.lower()
+        return " / date: " in normalized and (
+            "add by telegram user:" in normalized
+            or "force add by admin:" in normalized
+        )
 
     def _target_branch(self) -> Optional[str]:
         branch = getattr(self.config, "GITHUB_BRANCH", "")
@@ -258,9 +270,6 @@ class GitHubService:
             if not file_path:
                 file_path = self.config.DIRECT_RULE_FILE
 
-            if not self.repo:
-                return {"success": False, "error": "GitHub 仓库连接未初始化"}
-            
             # 检查仓库连接
             if not self.repo:
                 error_msg = "GitHub 仓库连接未初始化"
@@ -431,6 +440,11 @@ class GitHubService:
             if not file_path:
                 file_path = self.config.DIRECT_RULE_FILE
 
+            if not self.repo:
+                error_msg = "GitHub 仓库连接未初始化"
+                logger.error(error_msg)
+                return {"success": False, "error": error_msg}
+
             max_retries = 3
             for attempt in range(1, max_retries + 1):
                 file_data = await self.get_rule_file_data(file_path, use_cache=(attempt == 1))
@@ -459,10 +473,12 @@ class GitHubService:
                                 removed_lines.append(line)
                                 
                                 # 检查前一行是否是相关注释
-                                if i > 0 and lines[i-1].strip().startswith('#'):
+                                previous_line = lines[i-1].strip() if i > 0 else ""
+                                if previous_line and self._is_managed_rule_comment(previous_line):
                                     # 删除注释行
-                                    removed_lines.append(lines[i-1].strip())
-                                    new_lines.pop()  # 移除已添加的注释行
+                                    removed_lines.append(previous_line)
+                                    if new_lines:
+                                        new_lines.pop()  # 移除已添加的注释行
                                 
                                 i += 1  # 跳过当前规则行
                                 continue

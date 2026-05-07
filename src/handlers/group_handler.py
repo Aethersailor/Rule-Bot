@@ -123,7 +123,7 @@ class GroupHandler:
             if not domain:
                 # 未找到有效域名
                 await message.reply_text(
-                    "❌ **未找到有效域名**\n\n"
+                    "❌ *未找到有效域名*\n\n"
                     "💡 请在消息中包含域名，或回复包含域名的消息后 @我\n\n"
                     "📝 支持格式：\n"
                     "• `example.com`\n"
@@ -136,7 +136,7 @@ class GroupHandler:
             # 检查是否为 .cn 域名
             if is_cn_domain(domain):
                 await message.reply_text(
-                    f"ℹ️ **域名 `{domain}` 为 .cn 域名**\n\n"
+                    f"ℹ️ *域名 `{domain}` 为 .cn 域名*\n\n"
                     "📋 所有 .cn 域名默认直连，无需手动添加。",
                     parse_mode='Markdown'
                 )
@@ -209,7 +209,7 @@ class GroupHandler:
             can_add, remaining = self.handler_manager.check_user_add_limit(user_id)
             if not can_add:
                 await processing_msg.edit_text(
-                    f"⚠️ **添加频率限制**\n\n"
+                    f"⚠️ *添加频率限制*\n\n"
                     f"您在当前小时内已达到添加上限（{self.handler_manager.MAX_ADDS_PER_HOUR}个域名）。\n\n"
                     "🕐 请等待一小时后再尝试。",
                     parse_mode='Markdown'
@@ -225,25 +225,26 @@ class GroupHandler:
                 # 记录用户添加历史
                 self.handler_manager.record_user_add(user_id)
                 _, remaining = self.handler_manager.check_user_add_limit(user_id)
+                escaped_username = self.handler_manager.escape_markdown(username)
                 
-                result_text = f"✅ **域名添加成功！**\n\n"
-                result_text += f"📍 **域名：** `{domain}`\n"
-                result_text += f"👤 **提交者：** @{username}\n"
+                result_text = f"✅ *域名添加成功！*\n\n"
+                result_text += f"📍 *域名：* `{domain}`\n"
+                result_text += f"👤 *提交者：* @{escaped_username}\n"
                 if result.get("commit_url"):
-                    result_text += f"🔗 **查看提交：** [点击查看]({result['commit_url']})\n"
+                    result_text += f"🔗 *查看提交：* [点击查看]({result['commit_url']})\n"
                 result_text += f"\n💡 本小时内还可添加 {remaining} 个域名"
                 
             elif result["action"] == "exists":
-                result_text = f"ℹ️ **域名已存在**\n\n"
-                result_text += f"📍 **域名：** `{domain}`\n"
+                result_text = f"ℹ️ *域名已存在*\n\n"
+                result_text += f"📍 *域名：* `{domain}`\n"
                 result_text += f"📋 {result['message']}"
                 
             elif result["action"] == "rejected":
-                result_text = f"❌ **无法添加域名**\n\n"
-                result_text += f"📍 **域名：** `{domain}`\n"
+                result_text = f"❌ *无法添加域名*\n\n"
+                result_text += f"📍 *域名：* `{domain}`\n"
                 result_text += f"📋 {result['message']}"
                 if self.handler_manager.is_admin(user_id):
-                    result_text += "\n\n🛡️ **管理员可使用权限按钮强制添加。**"
+                    result_text += "\n\n🛡️ *管理员可使用权限按钮强制添加。*"
                     keyboard = [
                         [InlineKeyboardButton(
                             "🛡️ 管理员权限添加",
@@ -253,8 +254,8 @@ class GroupHandler:
                     reply_markup = InlineKeyboardMarkup(keyboard)
                 
             else:  # error
-                result_text = f"❌ **处理失败**\n\n"
-                result_text += f"📍 **域名：** `{domain}`\n"
+                result_text = f"❌ *处理失败*\n\n"
+                result_text += f"📍 *域名：* `{domain}`\n"
                 result_text += f"❌ {result['message']}"
 
             await processing_msg.edit_text(result_text, reply_markup=reply_markup, parse_mode='Markdown')

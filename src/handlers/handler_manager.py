@@ -459,19 +459,19 @@ class HandlerManager:
             welcome_text = f"""
 👋 你好，{username}！
 
-我是 **Rule-Bot**，可以帮你管理 Clash 规则。
+我是 *Rule-Bot*，可以帮你管理 Clash 规则。
 
-📂 **当前管理仓库**
+📂 *当前管理仓库*
 `{self.config.GITHUB_REPO}`
 
-✨ **我能做什么**
+✨ *我能做什么*
 • 🔍 查询域名是否已在规则中
 • 🌍 检查域名 IP 归属地（支持 DNS 解析）
 • 🤖 智能判断域名是否适合直连
 • 📝 一键添加域名到规则文件
 • 🗑️ 删除已添加的域名规则（暂未开放）
 
-💡 **使用提示**
+💡 *使用提示*
 直接在聊天框输入域名即可查询，或点击下方按钮操作。
 """
             
@@ -510,9 +510,9 @@ class HandlerManager:
             user = update.effective_user
             username = user.username or user.first_name or "未知"
             text = (
-                "🆔 **您的 Telegram 用户 ID：** "
+                "🆔 *您的 Telegram 用户 ID：* "
                 f"`{user.id}`\n"
-                f"👤 **用户名：** @{self.escape_markdown(username)}"
+                f"👤 *用户名：* @{self.escape_markdown(username)}"
             )
             await update.message.reply_text(text, parse_mode='Markdown')
         except Exception as e:
@@ -544,14 +544,14 @@ class HandlerManager:
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
-            "➕ **添加规则**\n\n请选择要添加的规则类型：",
+            "➕ *添加规则*\n\n请选择要添加的规则类型：",
             reply_markup=reply_markup
         )
     
     async def delete_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理 /delete 命令"""
         await update.message.reply_text(
-            "➖ **删除规则功能暂不可用**\n\n该功能正在开发中，敬请期待。"
+            "➖ *删除规则功能暂不可用*\n\n该功能正在开发中，敬请期待。"
         )
     
     async def skip_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -842,7 +842,7 @@ class HandlerManager:
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 
                 await processing_msg.edit_text(
-                    "⚠️ **添加频率限制**\n\n"
+                    "⚠️ *添加频率限制*\n\n"
                     f"您在当前小时内已达到添加上限（{self.MAX_ADDS_PER_HOUR}个域名）。\n\n"
                     "🕐 请等待一小时后再尝试添加新域名。\n\n"
                     "💡 此限制是为了防止系统滥用，感谢您的理解。",
@@ -864,8 +864,8 @@ class HandlerManager:
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 
                 await processing_msg.edit_text(
-                    "❌ **.cn 域名不可添加**\n\n"
-                    "📋 **.cn 域名默认直连**：所有 .cn 结尾的域名都已默认走直连路线，无需手动添加到规则中。\n\n"
+                    "❌ *.cn 域名不可添加*\n\n"
+                    "📋 *.cn 域名默认直连*：所有 .cn 结尾的域名都已默认走直连路线，无需手动添加到规则中。\n\n"
                     "💡 如需添加其他域名，请选择下方操作：",
                     reply_markup=reply_markup,
                     parse_mode='Markdown'
@@ -886,8 +886,8 @@ class HandlerManager:
                     reply_markup = InlineKeyboardMarkup(keyboard)
                     
                     await processing_msg.edit_text(
-                        "❌ **.cn 域名不可添加**\n\n"
-                        "📋 **.cn 域名默认直连**：所有 .cn 结尾的域名都已默认走直连路线，无需手动添加到规则中。",
+                        "❌ *.cn 域名不可添加*\n\n"
+                        "📋 *.cn 域名默认直连*：所有 .cn 结尾的域名都已默认走直连路线，无需手动添加到规则中。",
                         reply_markup=reply_markup,
                         parse_mode='Markdown'
                     )
@@ -910,9 +910,9 @@ class HandlerManager:
             second_level = extract_second_level_domain(domain)
             
             if github_result.get("exists"):
-                result_text = f"❌ **域名已存在于规则中**\n\n"
-                result_text += f"📍 **域名：** `{domain}`\n\n"
-                result_text += "📋 **找到的规则：**\n"
+                result_text = f"❌ *域名已存在于规则中*\n\n"
+                result_text += f"📍 *域名：* `{domain}`\n\n"
+                result_text += "📋 *找到的规则：*\n"
                 for match in github_result.get("matches", []):
                     result_text += f"   • 第{match['line']}行: {match['rule']}\n"
                 
@@ -930,10 +930,10 @@ class HandlerManager:
             if second_level and second_level != domain:
                 second_level_result = await self.github_service.check_domain_in_rules(second_level)
                 if second_level_result.get("exists"):
-                    result_text = f"❌ **二级域名已存在于规则中**\n\n"
-                    result_text += f"📍 **输入域名：** `{domain}`\n"
-                    result_text += f"📍 **二级域名：** `{second_level}`\n\n"
-                    result_text += "📋 **找到的规则：**\n"
+                    result_text = f"❌ *二级域名已存在于规则中*\n\n"
+                    result_text += f"📍 *输入域名：* `{domain}`\n"
+                    result_text += f"📍 *二级域名：* `{second_level}`\n\n"
+                    result_text += "📋 *找到的规则：*\n"
                     for match in second_level_result.get("matches", []):
                         result_text += f"   • 第{match['line']}行: {match['rule']}\n"
                     
@@ -950,8 +950,8 @@ class HandlerManager:
             # 检查GeoSite
             in_geosite = await self.data_manager.is_domain_in_geosite(domain)
             if in_geosite:
-                result_text = f"❌ **域名已存在于 GEOSITE:CN 中**\n\n"
-                result_text += f"📍 **域名：** `{domain}`\n\n"
+                result_text = f"❌ *域名已存在于 GEOSITE:CN 中*\n\n"
+                result_text += f"📍 *域名：* `{domain}`\n\n"
                 result_text += "该域名已在 GEOSITE:CN 规则中，不需要重复添加。"
                 
                 keyboard = [
@@ -979,16 +979,16 @@ class HandlerManager:
             })
             
             # 生成检查结果文本
-            result_text = f"📊 **域名检查结果**\n\n"
-            result_text += f"📍 **域名：** `{domain}`\n\n"
+            result_text = f"📊 *域名检查结果*\n\n"
+            result_text += f"📍 *域名：* `{domain}`\n\n"
             
             # 显示详细信息
             detail_lines = self._format_detail_lines(check_result.get("details", []))
             if detail_lines:
-                result_text += "📌 **检查详情：**\n"
+                result_text += "📌 *检查详情：*\n"
                 result_text += f"{detail_lines}\n"
 
-            result_text += f"\n💡 **建议：** {check_result['recommendation']}\n"
+            result_text += f"\n💡 *建议：* {check_result['recommendation']}\n"
             
             # 根据检查结果决定下一步
             keyboard = []
@@ -1000,9 +1000,9 @@ class HandlerManager:
                 keyboard.append([InlineKeyboardButton("❌ 取消添加", callback_data="confirm_add_no")])
             elif should_reject:
                 # 不符合条件，拒绝添加
-                result_text += "\n❌ **不符合添加条件，无法添加到直连规则。**"
+                result_text += "\n❌ *不符合添加条件，无法添加到直连规则。*"
                 if self.is_admin(user_id):
-                    result_text += "\n🛡️ **管理员权限：** 可强制添加"
+                    result_text += "\n🛡️ *管理员权限：* 可强制添加"
                     keyboard.append([
                         InlineKeyboardButton(
                             "🛡️ 管理员权限添加",
@@ -1046,15 +1046,15 @@ class HandlerManager:
             })
             
             # 生成检查结果文本
-            result_text = f"📊 **域名检查结果**\n\n"
-            result_text += f"📍 **域名：** `{domain}`\n\n"
+            result_text = f"📊 *域名检查结果*\n\n"
+            result_text += f"📍 *域名：* `{domain}`\n\n"
             
             detail_lines = self._format_detail_lines(check_result.get("details", []))
             if detail_lines:
-                result_text += "📌 **检查详情：**\n"
+                result_text += "📌 *检查详情：*\n"
                 result_text += f"{detail_lines}\n"
 
-            result_text += f"\n💡 **建议：** {check_result['recommendation']}\n"
+            result_text += f"\n💡 *建议：* {check_result['recommendation']}\n"
             
             # 根据检查结果决定下一步
             keyboard = []
@@ -1064,9 +1064,9 @@ class HandlerManager:
                 keyboard.append([InlineKeyboardButton("✅ 确认添加", callback_data="confirm_add_yes")])
                 keyboard.append([InlineKeyboardButton("❌ 取消添加", callback_data="confirm_add_no")])
             else:
-                result_text += "\n❌ **不符合添加条件，无法添加到直连规则。**"
+                result_text += "\n❌ *不符合添加条件，无法添加到直连规则。*"
                 if self.is_admin(user_id):
-                    result_text += "\n🛡️ **管理员权限：** 可强制添加"
+                    result_text += "\n🛡️ *管理员权限：* 可强制添加"
                     keyboard.append([
                         InlineKeyboardButton(
                             "🛡️ 管理员权限添加",
@@ -1105,7 +1105,7 @@ class HandlerManager:
 
             if is_cn_domain(domain):
                 await query.edit_message_text(
-                    "ℹ️ **.cn 域名默认直连，无需手动添加。**",
+                    "ℹ️ *.cn 域名默认直连，无需手动添加。*",
                     parse_mode='Markdown'
                 )
                 return
@@ -1119,7 +1119,7 @@ class HandlerManager:
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.edit_message_text(
-                    "⚠️ **添加频率限制**\n\n"
+                    "⚠️ *添加频率限制*\n\n"
                     f"您在当前小时内已达到添加上限（{self.MAX_ADDS_PER_HOUR}个域名）。\n\n"
                     "🕐 请等待一小时后再尝试添加新域名。\n\n"
                     "💡 此限制是为了防止系统滥用，感谢您的理解。",
@@ -1131,9 +1131,9 @@ class HandlerManager:
             # 防重复检查
             github_result = await self.github_service.check_domain_in_rules(domain)
             if github_result.get("exists"):
-                result_text = f"❌ **域名已存在于规则中**\n\n"
-                result_text += f"📍 **域名：** `{domain}`\n\n"
-                result_text += "📋 **找到的规则：**\n"
+                result_text = f"❌ *域名已存在于规则中*\n\n"
+                result_text += f"📍 *域名：* `{domain}`\n\n"
+                result_text += "📋 *找到的规则：*\n"
                 for match in github_result.get("matches", []):
                     result_text += f"   • 第{match['line']}行: {match['rule']}\n"
 
@@ -1147,8 +1147,8 @@ class HandlerManager:
 
             in_geosite = await self.data_manager.is_domain_in_geosite(domain)
             if in_geosite:
-                result_text = f"❌ **域名已存在于 GEOSITE:CN 中**\n\n"
-                result_text += f"📍 **域名：** `{domain}`\n\n"
+                result_text = f"❌ *域名已存在于 GEOSITE:CN 中*\n\n"
+                result_text += f"📍 *域名：* `{domain}`\n\n"
                 result_text += "该域名已在 GEOSITE:CN 规则中，不需要重复添加。"
 
                 keyboard = [
@@ -1179,20 +1179,20 @@ class HandlerManager:
                 self.record_user_add(user_id)
                 _, remaining = self.check_user_add_limit(user_id)
 
-                result_text = "✅ **域名添加成功（管理员权限）！**\n\n"
-                result_text += f"📍 **域名：** `{target_domain}`\n"
-                result_text += f"👤 **管理员：** @{self.escape_markdown(username)}\n"
-                result_text += "🛡️ **添加方式：** 管理员权限强制添加\n"
-                result_text += f"📂 **文件路径：** `{add_result['file_path']}`\n"
+                result_text = "✅ *域名添加成功（管理员权限）！*\n\n"
+                result_text += f"📍 *域名：* `{target_domain}`\n"
+                result_text += f"👤 *管理员：* @{self.escape_markdown(username)}\n"
+                result_text += "🛡️ *添加方式：* 管理员权限强制添加\n"
+                result_text += f"📂 *文件路径：* `{add_result['file_path']}`\n"
                 if add_result.get('commit_url'):
-                    result_text += f"🔗 **查看提交：** [点击查看]({add_result['commit_url']})\n"
-                    result_text += f"📝 **Commit ID：** `{add_result.get('commit_sha', '')[:8]}`\n"
-                result_text += f"💬 **提交信息：** `{add_result['commit_message']}`\n"
+                    result_text += f"🔗 *查看提交：* [点击查看]({add_result['commit_url']})\n"
+                    result_text += f"📝 *Commit ID：* `{add_result.get('commit_sha', '')[:8]}`\n"
+                result_text += f"💬 *提交信息：* `{add_result['commit_message']}`\n"
                 result_text += f"\n💡 本小时内还可添加 {remaining} 个域名"
             else:
-                result_text = f"❌ **域名添加失败**\n\n"
-                result_text += f"📍 **域名：** `{target_domain}`\n"
-                result_text += f"❌ **错误：** {self.escape_markdown(add_result.get('error', '未知错误'))}"
+                result_text = f"❌ *域名添加失败*\n\n"
+                result_text += f"📍 *域名：* `{target_domain}`\n"
+                result_text += f"❌ *错误：* {self.escape_markdown(add_result.get('error', '未知错误'))}"
 
             keyboard = [
                 [InlineKeyboardButton("➕ 继续添加", callback_data="add_direct_rule")],
@@ -1219,7 +1219,7 @@ class HandlerManager:
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 
                 await query.edit_message_text(
-                    "❌ **已取消添加**\n\n您可以重新选择要添加的域名。",
+                    "❌ *已取消添加*\n\n您可以重新选择要添加的域名。",
                     reply_markup=reply_markup,
                     parse_mode='Markdown'
                 )
@@ -1246,8 +1246,8 @@ class HandlerManager:
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             await query.edit_message_text(
-                f"📝 **请输入域名说明**\n\n"
-                f"📍 **域名：** `{domain}`\n\n"
+                f"📝 *请输入域名说明*\n\n"
+                f"📍 *域名：* `{domain}`\n\n"
                 f"请输入该域名的用途说明（限制 20 个汉字以内）：\n\n"
                 f"例如：游戏官网、视频网站、新闻门户等",
                 reply_markup=reply_markup,
@@ -1275,10 +1275,10 @@ class HandlerManager:
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 
                 await update.message.reply_text(
-                    f"❌ **说明内容超出限制**\n\n"
-                    f"📏 **限制：** 最多 {self.MAX_DESCRIPTION_LENGTH} 个字符\n"
-                    f"📝 **您的输入：** {len(description)} 个字符\n\n"
-                    f"✂️ **截取后内容：** `{processed_description}`\n\n"
+                    f"❌ *说明内容超出限制*\n\n"
+                    f"📏 *限制：* 最多 {self.MAX_DESCRIPTION_LENGTH} 个字符\n"
+                    f"📝 *您的输入：* {len(description)} 个字符\n\n"
+                    f"✂️ *截取后内容：* `{processed_description}`\n\n"
                     "💡 请重新输入简短的说明，或发送 `/skip` 跳过说明。",
                     reply_markup=reply_markup,
                     parse_mode='Markdown'
@@ -1331,21 +1331,21 @@ class HandlerManager:
                 # 获取剩余添加次数
                 _, remaining = self.check_user_add_limit(user_id)
                 
-                result_text = f"✅ **域名添加成功！**\n\n"
-                result_text += f"📍 **域名：** `{target_domain}`\n"
-                result_text += f"👤 **提交者：** @{self.escape_markdown(username)}\n"
+                result_text = f"✅ *域名添加成功！*\n\n"
+                result_text += f"📍 *域名：* `{target_domain}`\n"
+                result_text += f"👤 *提交者：* @{self.escape_markdown(username)}\n"
                 if description:
-                    result_text += f"📝 **说明：** {self.escape_markdown(description)}\n"
-                result_text += f"📂 **文件路径：** `{add_result['file_path']}`\n"
+                    result_text += f"📝 *说明：* {self.escape_markdown(description)}\n"
+                result_text += f"📂 *文件路径：* `{add_result['file_path']}`\n"
                 if add_result.get('commit_url'):
-                    result_text += f"🔗 **查看提交：** [点击查看]({add_result['commit_url']})\n"
-                    result_text += f"📝 **Commit ID：** `{add_result.get('commit_sha', '')[:8]}`\n"
-                result_text += f"💬 **提交信息：** `{add_result['commit_message']}`\n"
+                    result_text += f"🔗 *查看提交：* [点击查看]({add_result['commit_url']})\n"
+                    result_text += f"📝 *Commit ID：* `{add_result.get('commit_sha', '')[:8]}`\n"
+                result_text += f"💬 *提交信息：* `{add_result['commit_message']}`\n"
                 result_text += f"\n💡 本小时内还可添加 {remaining} 个域名"
             else:
-                result_text = f"❌ **域名添加失败**\n\n"
-                result_text += f"📍 **域名：** `{target_domain}`\n"
-                result_text += f"❌ **错误：** {self.escape_markdown(add_result.get('error', '未知错误'))}"
+                result_text = f"❌ *域名添加失败*\n\n"
+                result_text += f"📍 *域名：* `{target_domain}`\n"
+                result_text += f"❌ *错误：* {self.escape_markdown(add_result.get('error', '未知错误'))}"
             
             keyboard = [
                 [InlineKeyboardButton("➕ 继续添加", callback_data="add_direct_rule")],
@@ -1396,21 +1396,21 @@ class HandlerManager:
                 # 获取剩余添加次数
                 _, remaining = self.check_user_add_limit(user_id)
                 
-                result_text = f"✅ **域名添加成功！**\n\n"
-                result_text += f"📍 **域名：** `{target_domain}`\n"
-                result_text += f"👤 **提交者：** @{self.escape_markdown(username)}\n"
+                result_text = f"✅ *域名添加成功！*\n\n"
+                result_text += f"📍 *域名：* `{target_domain}`\n"
+                result_text += f"👤 *提交者：* @{self.escape_markdown(username)}\n"
                 if description:
-                    result_text += f"📝 **说明：** {self.escape_markdown(description)}\n"
-                result_text += f"📂 **文件路径：** `{add_result['file_path']}`\n"
+                    result_text += f"📝 *说明：* {self.escape_markdown(description)}\n"
+                result_text += f"📂 *文件路径：* `{add_result['file_path']}`\n"
                 if add_result.get('commit_url'):
-                    result_text += f"🔗 **查看提交：** [点击查看]({add_result['commit_url']})\n"
-                    result_text += f"📝 **Commit ID：** `{add_result.get('commit_sha', '')[:8]}`\n"
-                result_text += f"💬 **提交信息：** `{add_result['commit_message']}`\n"
+                    result_text += f"🔗 *查看提交：* [点击查看]({add_result['commit_url']})\n"
+                    result_text += f"📝 *Commit ID：* `{add_result.get('commit_sha', '')[:8]}`\n"
+                result_text += f"💬 *提交信息：* `{add_result['commit_message']}`\n"
                 result_text += f"\n💡 本小时内还可添加 {remaining} 个域名"
             else:
-                result_text = f"❌ **域名添加失败**\n\n"
-                result_text += f"📍 **域名：** `{target_domain}`\n"
-                result_text += f"❌ **错误：** {self.escape_markdown(add_result.get('error', '未知错误'))}"
+                result_text = f"❌ *域名添加失败*\n\n"
+                result_text += f"📍 *域名：* `{target_domain}`\n"
+                result_text += f"❌ *错误：* {self.escape_markdown(add_result.get('error', '未知错误'))}"
             
             keyboard = [
                 [InlineKeyboardButton("➕ 继续添加", callback_data="add_direct_rule")],

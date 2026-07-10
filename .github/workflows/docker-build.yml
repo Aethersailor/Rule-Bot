@@ -97,8 +97,11 @@ jobs:
           image="${IMAGE_NAME}:latest"
           for attempt in {1..12}; do
             manifest="$(docker buildx imagetools inspect "$image" --raw 2>/dev/null || true)"
-            if grep -q '"architecture":"amd64"' <<<"$manifest" \
-              && grep -q '"architecture":"arm64"' <<<"$manifest"; then
+            if jq -e '
+              ([.manifests[]?.platform | select(.os == "linux") | .architecture] | index("amd64")) != null
+              and
+              ([.manifests[]?.platform | select(.os == "linux") | .architecture] | index("arm64")) != null
+            ' <<<"$manifest" >/dev/null 2>&1; then
               exit 0
             fi
             sleep 10

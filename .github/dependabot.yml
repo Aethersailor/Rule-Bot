@@ -4,39 +4,38 @@ updates:
     directory: "/"
     target-branch: "master"
     schedule:
-      interval: "cron"
-      cronjob: "0 4 * * *"
+      interval: "weekly"
+      day: "monday"
+      time: "04:00"
       timezone: "Asia/Shanghai"
-    open-pull-requests-limit: 100
+    open-pull-requests-limit: 5
     rebase-strategy: "auto"
     labels: ["dependencies","github-actions"]
+    groups:
+      github-actions:
+        patterns: ["*"]
   - package-ecosystem: "pip"
     directory: "/"
     target-branch: "master"
     schedule:
-      interval: "cron"
-      cronjob: "10 4 * * *"
+      interval: "weekly"
+      day: "monday"
+      time: "04:10"
       timezone: "Asia/Shanghai"
-    open-pull-requests-limit: 100
+    open-pull-requests-limit: 5
     rebase-strategy: "auto"
     labels: ["dependencies","python"]
+    groups:
+      python:
+        patterns: ["*"]
   - package-ecosystem: "docker"
     directory: "/"
     target-branch: "master"
     schedule:
-      interval: "cron"
-      cronjob: "20 4 * * *"
+      interval: "weekly"
+      day: "monday"
+      time: "04:20"
       timezone: "Asia/Shanghai"
-    open-pull-requests-limit: 100
+    open-pull-requests-limit: 5
     rebase-strategy: "auto"
     labels: ["dependencies","docker"]
-  - package-ecosystem: "docker-compose"
-    directory: "/"
-    target-branch: "master"
-    schedule:
-      interval: "cron"
-      cronjob: "30 4 * * *"
-      timezone: "Asia/Shanghai"
-    open-pull-requests-limit: 100
-    rebase-strategy: "auto"
-    labels: ["dependencies","docker-compose"]

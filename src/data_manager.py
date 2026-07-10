@@ -6,6 +6,7 @@
 import asyncio
 import aiohttp
 import hashlib
+import ipaddress
 import json
 import re
 import threading
@@ -13,7 +14,7 @@ import time
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Set, List, Pattern, Optional, Tuple, Dict, Any
+from typing import Set, List, Pattern, Optional, Tuple, Dict, Any, Awaitable, Callable
 from loguru import logger
 
 from .config import Config
@@ -35,6 +36,7 @@ class DataManager:
         self._update_lock = threading.Lock()
         self._scheduler_task: Optional[asyncio.Task] = None
         self._session: Optional[aiohttp.ClientSession] = None
+        self._update_callbacks: List[Callable[[Dict[str, bool]], Awaitable[None]]] = []
         self._geosite_cache = TTLCache(
             config.GEOSITE_CACHE_SIZE,
             config.GEOSITE_CACHE_TTL
@@ -103,6 +105,23 @@ class DataManager:
         if self._session and not self._session.closed:
             await self._session.close()
         self._session = None
+
+    def register_update_callback(
+        self,
+        callback: Callable[[Dict[str, bool]], Awaitable[None]],
+    ) -> None:
+        """Register a listener that reloads services after atomic data updates."""
+        if callback not in self._update_callbacks:
+            self._update_callbacks.append(callback)
+
+    async def _notify_updates(self, changes: Dict[str, bool]) -> None:
+        if not any(changes.values()):
+            return
+        for callback in list(self._update_callbacks):
+            try:
+                await callback(changes)
+            except Exception as e:
+                logger.error("数据更新回调失败: {}", e)
     
     async def initialize(self):
         """初始化数据管理器"""
@@ -117,6 +136,7 @@ class DataManager:
             
         except Exception as e:
             logger.error(f"数据管理器初始化失败: {e}")
+            await self.close()
             raise
     
     async def _download_initial_data(self):
@@ -136,21 +156,39 @@ class DataManager:
                 self.config.DATA_UPDATE_INTERVAL
             )
             
-            geoip_changed = False
-            cn_ipv4_changed = False
-            geosite_changed = False
-
+            requests = []
+            labels = []
             if need_geoip:
                 logger.info("下载 GeoIP 数据...")
-                geoip_changed = await self._download_geoip()
-            
+                labels.append(("geoip", self.geoip_file))
+                requests.append(self._download_geoip())
             if need_cn_ipv4:
                 logger.info("下载中国 IPv4 CIDR 数据...")
-                cn_ipv4_changed = await self._download_cn_ipv4()
-
+                labels.append(("cn_ipv4", self.cn_ipv4_file))
+                requests.append(self._download_cn_ipv4())
             if need_geosite:
                 logger.info("下载 GeoSite 数据...")
-                geosite_changed = await self._download_geosite()
+                labels.append(("geosite", self.geosite_file))
+                requests.append(self._download_geosite())
+
+            changes = {"geoip": False, "cn_ipv4": False, "geosite": False}
+            if requests:
+                results = await asyncio.gather(*requests, return_exceptions=True)
+                missing_failures = []
+                for (label, path), result in zip(labels, results):
+                    if isinstance(result, BaseException):
+                        if path.exists():
+                            logger.warning("{} 更新失败，继续使用现有数据: {}", label, result)
+                        else:
+                            missing_failures.append(f"{label}: {result}")
+                    else:
+                        changes[label] = bool(result)
+                if missing_failures:
+                    raise RuntimeError("; ".join(missing_failures))
+
+            geoip_changed = changes["geoip"]
+            cn_ipv4_changed = changes["cn_ipv4"]
+            geosite_changed = changes["geosite"]
             
             # 加载 GeoSite 数据到内存
             await self._load_geosite_data(force=True)
@@ -376,10 +414,23 @@ class DataManager:
         try:
             logger.info("开始定时更新数据...")
             
-            # 下载新数据
-            geoip_changed = await self._download_geoip()
-            cn_ipv4_changed = await self._download_cn_ipv4()
-            geosite_changed = await self._download_geosite()
+            # 数据源彼此独立；单个源失败不应阻止其他数据更新。
+            results = await asyncio.gather(
+                self._download_geoip(),
+                self._download_cn_ipv4(),
+                self._download_geosite(),
+                return_exceptions=True,
+            )
+            changes = {"geoip": False, "cn_ipv4": False, "geosite": False}
+            for label, result in zip(changes, results):
+                if isinstance(result, BaseException):
+                    logger.warning("{} 定时更新失败，保留现有数据: {}", label, result)
+                else:
+                    changes[label] = bool(result)
+
+            geoip_changed = changes["geoip"]
+            cn_ipv4_changed = changes["cn_ipv4"]
+            geosite_changed = changes["geosite"]
             
             # 重新加载 GeoSite 数据（仅文件变化时）
             if geosite_changed:
@@ -387,6 +438,8 @@ class DataManager:
                 trim_memory("geosite 更新后内存修剪")
             elif geoip_changed or cn_ipv4_changed:
                 trim_memory("数据更新后内存修剪")
+
+            await self._notify_updates(changes)
             
             logger.info("定时更新完成")
             
@@ -405,10 +458,48 @@ class DataManager:
     def _save_meta(self, meta_path: Path, meta: Dict[str, Any]) -> None:
         try:
             meta_path.parent.mkdir(parents=True, exist_ok=True)
-            with meta_path.open("w", encoding="utf-8") as handle:
+            tmp_path = meta_path.with_suffix(meta_path.suffix + ".tmp")
+            with tmp_path.open("w", encoding="utf-8") as handle:
                 json.dump(meta, handle, ensure_ascii=False, indent=2)
+            tmp_path.replace(meta_path)
         except Exception as e:
             logger.debug(f"保存 meta 失败: {e}")
+
+    @staticmethod
+    def _validate_download(path: Path, label: str) -> None:
+        """Reject truncated or wrong-content upstream responses before replace."""
+        if label == "geoip":
+            if path.stat().st_size < 100_000:
+                raise ValueError("GeoIP 文件过小")
+            import maxminddb
+
+            reader = maxminddb.open_database(str(path))
+            reader.close()
+            return
+
+        if label == "cn_ipv4":
+            valid = 0
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    network = ipaddress.ip_network(line, strict=False)
+                    if isinstance(network, ipaddress.IPv4Network):
+                        valid += 1
+            if valid < 100:
+                raise ValueError("中国 IPv4 CIDR 数据有效条目不足")
+            return
+
+        if label == "geosite":
+            valid = 0
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        valid += 1
+            if valid < 100:
+                raise ValueError("GeoSite 数据有效条目不足")
 
     async def _download_with_fallback(
         self,
@@ -456,6 +547,8 @@ class DataManager:
                             digest.update(chunk)
                             size += len(chunk)
 
+                    self._validate_download(tmp_path, label)
+
                     new_hash = digest.hexdigest()
                     old_hash = current_meta.get("sha256")
                     changed = True
@@ -486,6 +579,11 @@ class DataManager:
                     )
                     return changed
             except Exception as e:
+                try:
+                    tmp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
+                    tmp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
                 last_error = str(e)
                 logger.warning("{} 数据下载失败: {} ({})", label, url, e)
 

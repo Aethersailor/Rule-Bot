@@ -2,4 +2,4 @@
 
 # Start the application
 cd /app
-python -m src.main 
+exec python -m src.main

@@ -94,6 +94,14 @@ class DummyGeoIPServiceMixed:
         }
 
 
+class DummyDNSServiceUnavailable:
+    async def query_a_record(self, domain: str, use_edns_china: bool = True):
+        return []
+
+    async def query_ns_records(self, domain: str):
+        return []
+
+
 class TestDomainChecker(unittest.IsolatedAsyncioTestCase):
     async def test_check_domain_comprehensive_china_ip(self):
         checker = DomainChecker(DummyDNSService(), DummyGeoIPService())
@@ -124,6 +132,14 @@ class TestDomainChecker(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ns_china_status"])
         self.assertIn("NS 服务器: 1/2 个 IP 在中国大陆", result["details"])
         self.assertLess(duration, 0.09)
+
+    async def test_empty_dns_result_is_unknown_not_foreign(self):
+        checker = DomainChecker(DummyDNSServiceUnavailable(), DummyGeoIPServiceNoChina())
+        result = await checker.check_domain_comprehensive("example.com")
+
+        self.assertEqual(result["lookup_status"], "unknown")
+        self.assertIn("error", result)
+        self.assertFalse(checker.should_reject(result))
 
 
 if __name__ == '__main__':

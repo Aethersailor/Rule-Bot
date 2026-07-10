@@ -8,6 +8,7 @@ import asyncio
 import os
 import sys
 import psutil
+import signal
 import time
 from loguru import logger
 
@@ -52,14 +53,21 @@ def _configure_logging():
 
 
 def set_memory_limit():
-    """设置内存限制（默认软限制 256 MB，硬限制 512 MB）"""
+    """Apply an address-space limit only when explicitly configured."""
     if resource is None:
         logger.info("当前平台不支持 resource 模块，跳过内存限制设置")
         return
 
     try:
-        soft_mb = int(os.getenv("MEMORY_SOFT_LIMIT_MB", "256"))
-        hard_mb = int(os.getenv("MEMORY_HARD_LIMIT_MB", str(soft_mb * 2)))
+        soft_raw = os.getenv("MEMORY_SOFT_LIMIT_MB", "").strip()
+        hard_raw = os.getenv("MEMORY_HARD_LIMIT_MB", "").strip()
+        if not soft_raw and not hard_raw:
+            logger.info("未配置进程地址空间限制，交由容器/宿主机管理")
+            return
+        soft_mb = int(soft_raw or hard_raw)
+        hard_mb = int(hard_raw or soft_mb)
+        if hard_mb < soft_mb:
+            raise ValueError("MEMORY_HARD_LIMIT_MB 不能小于 MEMORY_SOFT_LIMIT_MB")
         memory_soft = soft_mb * 1024 * 1024
         memory_hard = hard_mb * 1024 * 1024
         resource.setrlimit(resource.RLIMIT_AS, (memory_soft, memory_hard))
@@ -99,22 +107,25 @@ def log_memory_usage():
         current_time = time.time()
         warning_cooldown = 300  # 5 分钟内不重复相同级别的警告
         
-        # 检查是否接近硬限制
-        if memory_mb > 480:  # 接近 512 MB 硬限制时紧急警告
+        soft_limit = int(os.getenv("MEMORY_SOFT_LIMIT_MB", "0") or 0)
+        hard_limit = int(os.getenv("MEMORY_HARD_LIMIT_MB", "0") or 0)
+
+        # Only compare against limits that are actually configured.
+        if hard_limit and memory_mb > hard_limit * 0.94:
             if current_time - log_memory_usage.last_warning_time > warning_cooldown or log_memory_usage.last_warning_level != 3:
-                logger.error(f"🚨 内存使用危急: {memory_mb:.1f} MB (接近 512 MB 硬限制，可能被系统终止)")
+                logger.error(f"🚨 内存使用危急: {memory_mb:.1f} MB (接近 {hard_limit} MB 硬限制)")
                 # 尝试主动释放一些内存
                 import gc
                 gc.collect()
                 logger.warning("已尝试垃圾回收释放内存")
                 log_memory_usage.last_warning_time = current_time
                 log_memory_usage.last_warning_level = 3
-        elif memory_mb > 240:  # 接近 256 MB 软限制时警告
+        elif soft_limit and memory_mb > soft_limit * 0.94:
             if current_time - log_memory_usage.last_warning_time > warning_cooldown or log_memory_usage.last_warning_level != 2:
-                logger.warning(f"⚠️ 内存使用过高: {memory_mb:.1f} MB (接近 256 MB 软限制)")
+                logger.warning(f"⚠️ 内存使用过高: {memory_mb:.1f} MB (接近 {soft_limit} MB 软限制)")
                 log_memory_usage.last_warning_time = current_time
                 log_memory_usage.last_warning_level = 2
-        elif memory_mb > 200:  # 超过 200 MB 时提醒
+        elif memory_mb > 512:
             if current_time - log_memory_usage.last_warning_time > warning_cooldown or log_memory_usage.last_warning_level != 1:
                 logger.warning(f"⚠️ 内存使用较高: {memory_mb:.1f} MB")
                 log_memory_usage.last_warning_time = current_time
@@ -146,6 +157,20 @@ async def _run():
     
     # 初始化机器人
     bot = RuleBot(config, data_manager)
+
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def request_stop():
+        if not stop_event.is_set():
+            logger.info("收到停止信号，正在优雅关闭...")
+            stop_event.set()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, request_stop)
+        except (NotImplementedError, RuntimeError):
+            signal.signal(sig, lambda *_args: loop.call_soon_threadsafe(request_stop))
     
     # 启动机器人
     logger.info("启动 Telegram 机器人...")
@@ -165,7 +190,7 @@ async def _run():
     monitor_thread = threading.Thread(target=memory_monitor, daemon=True)
     monitor_thread.start()
 
-    await bot.start()
+    await bot.start(stop_event)
 
 def main():
     """主程序入口"""

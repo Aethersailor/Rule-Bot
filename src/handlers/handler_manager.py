@@ -3,7 +3,7 @@
 统一管理所有 Telegram 消息处理逻辑
 """
 
-import asyncio
+import secrets
 import time
 from typing import Dict, Any, Optional
 from collections import defaultdict
@@ -20,6 +20,7 @@ from ..services.github_service import GitHubService
 from ..services.domain_checker import DomainChecker
 from ..services.group_service import GroupService
 from ..utils.domain_utils import normalize_domain, extract_second_level_domain, extract_second_level_domain_for_rules, is_cn_domain
+from ..utils.input_safety import validate_single_line_text
 
 
 class HandlerManager:
@@ -51,6 +52,22 @@ class HandlerManager:
         )
         self.github_service = GitHubService(config)
         self.domain_checker = DomainChecker(self.dns_service, self.geoip_service)
+
+        # Runtime state is initialized before Telegram starts so callbacks can
+        # never observe partially initialized dictionaries.
+        self.user_states: Dict[int, Dict[str, Any]] = {}
+        self.user_add_history: Dict[int, list] = defaultdict(list)
+        self._pending_actions: Dict[tuple[int, str], Dict[str, Any]] = {}
+        self._last_history_cleanup = 0
+        self._last_state_cleanup = 0.0
+        self.MAX_DESCRIPTION_LENGTH = 20
+        self.MAX_ADDS_PER_HOUR = 50
+        self.MAX_DETAIL_LINES = 6
+        self.MAX_DETAIL_LINE_LENGTH = 120
+        self.STATE_TTL = 1800
+        self.ACTION_TTL = 900
+
+        self.data_manager.register_update_callback(self._handle_data_update)
         
         # 群组服务（需要 bot 实例）
         self.group_service = None
@@ -62,21 +79,18 @@ class HandlerManager:
         if self.dns_service:
             await self.dns_service.start()
         
-        # 用户状态管理
-        self.user_states: Dict[int, Dict[str, Any]] = {}
-        
-        # 用户限制管理
-        self.user_add_history: Dict[int, list] = defaultdict(list)  # 用户添加历史 {user_id: [timestamp1, timestamp2, ...]}
-        self._last_history_cleanup = 0
-        self.MAX_DESCRIPTION_LENGTH = 20  # 域名说明最大字符数
-        self.MAX_ADDS_PER_HOUR = 50  # 每小时最多添加域名数
-        self.MAX_DETAIL_LINES = 6  # 检查详情最大行数
-        self.MAX_DETAIL_LINE_LENGTH = 120  # 单行详情最大长度
-
     async def stop(self):
         """停止服务"""
         if self.dns_service:
             await self.dns_service.close()
+        if self.geoip_service:
+            self.geoip_service.close()
+        if self.github_service:
+            self.github_service.close()
+
+    async def _handle_data_update(self, changes: Dict[str, bool]) -> None:
+        if changes.get("geoip") or changes.get("cn_ipv4"):
+            self.geoip_service.reload()
 
     async def check_and_add_domain_auto(
         self, 
@@ -104,6 +118,12 @@ class HandlerManager:
         try:
             # 1. 检查是否已存在于 GitHub 规则中
             github_result = await self.github_service.check_domain_in_rules(domain)
+            if github_result.get("error"):
+                return {
+                    "success": False,
+                    "action": "error",
+                    "message": github_result["error"],
+                }
             if github_result.get("exists"):
                 matches = github_result.get("matches", [])
                 match_info = f"第{matches[0]['line']}行" if matches else ""
@@ -176,8 +196,17 @@ class HandlerManager:
     
     def get_user_state(self, user_id: int) -> Dict[str, Any]:
         """获取用户状态"""
-        if user_id not in self.user_states:
-            self.user_states[user_id] = {"state": "idle", "data": {}}
+        self._cleanup_transient_state()
+        state = self.user_states.get(user_id)
+        if state and time.monotonic() - state.get("updated_at", 0) > self.STATE_TTL:
+            self.user_states.pop(user_id, None)
+            state = None
+        if state is None:
+            self.user_states[user_id] = {
+                "state": "idle",
+                "data": {},
+                "updated_at": time.monotonic(),
+            }
         return self.user_states[user_id]
     
     def set_user_state(self, user_id: int, state: str, data: Dict[str, Any] = None):
@@ -186,6 +215,56 @@ class HandlerManager:
             self.user_states[user_id] = {}
         self.user_states[user_id]["state"] = state
         self.user_states[user_id]["data"] = data or {}
+        self.user_states[user_id]["updated_at"] = time.monotonic()
+
+    def _cleanup_transient_state(self) -> None:
+        now = time.monotonic()
+        if now - self._last_state_cleanup < 600:
+            return
+        state_cutoff = now - self.STATE_TTL
+        action_cutoff = now - self.ACTION_TTL
+        for uid, state in list(self.user_states.items()):
+            if state.get("updated_at", 0) < state_cutoff:
+                self.user_states.pop(uid, None)
+        for key, action in list(self._pending_actions.items()):
+            if action.get("created_at", 0) < action_cutoff:
+                self._pending_actions.pop(key, None)
+        self._last_state_cleanup = now
+
+    def create_pending_action(self, user_id: int, action: str, **data: Any) -> str:
+        self._cleanup_transient_state()
+        if len(self._pending_actions) >= 4096:
+            oldest = min(
+                self._pending_actions,
+                key=lambda key: self._pending_actions[key].get("created_at", 0),
+            )
+            self._pending_actions.pop(oldest, None)
+        token = secrets.token_urlsafe(6)
+        self._pending_actions[(user_id, token)] = {
+            "action": action,
+            "data": data,
+            "created_at": time.monotonic(),
+        }
+        return token
+
+    def get_pending_action(
+        self,
+        user_id: int,
+        token: str,
+        expected_action: str,
+        consume: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        self._cleanup_transient_state()
+        key = (user_id, token)
+        item = self._pending_actions.get(key)
+        if not item or item.get("action") != expected_action:
+            return None
+        if time.monotonic() - item.get("created_at", 0) > self.ACTION_TTL:
+            self._pending_actions.pop(key, None)
+            return None
+        if consume:
+            self._pending_actions.pop(key, None)
+        return item.get("data", {})
     
     def check_user_add_limit(self, user_id: int) -> tuple[bool, int]:
         """检查用户添加频率限制
@@ -231,9 +310,10 @@ class HandlerManager:
         """检查是否管理员"""
         return user_id in self.config.ADMIN_USER_IDS
 
-    def get_admin_force_add_callback(self, domain: str) -> str:
+    def get_admin_force_add_callback(self, user_id: int, domain: str) -> str:
         """构建管理员权限添加的回调数据"""
-        return f"admin_force_add|{domain}"
+        token = self.create_pending_action(user_id, "admin_force_add", domain=domain)
+        return f"admin_force_add|{token}"
     
     def validate_description(self, description: str) -> tuple[bool, str]:
         """验证域名说明
@@ -244,14 +324,10 @@ class HandlerManager:
         if not description:
             return True, ""
         
-        # 去除前后空格
-        description = description.strip()
-        
-        # 检查长度
-        if len(description) > self.MAX_DESCRIPTION_LENGTH:
-            return False, description[:self.MAX_DESCRIPTION_LENGTH]
-        
-        return True, description
+        try:
+            return True, validate_single_line_text(description, self.MAX_DESCRIPTION_LENGTH)
+        except ValueError:
+            return False, description.strip()[:self.MAX_DESCRIPTION_LENGTH]
     
     def escape_markdown(self, text: str) -> str:
         """转义 Markdown 特殊字符"""
@@ -267,6 +343,7 @@ class HandlerManager:
 
     def _build_main_menu_text(self, username: str) -> str:
         """构建主菜单文案"""
+        username = self.escape_markdown(username)
         return f"""
 👋 欢迎使用 Rule-Bot，{username}！
 
@@ -354,7 +431,7 @@ class HandlerManager:
                 if can_add:
                     stats_text += f"⏳ *添加限制：* 本小时内还可添加 {remaining} 个域名\n\n"
                 else:
-                    stats_text += f"⛔ *添加限制：* 本小时内已达到添加上限，请稍后再试\n\n"
+                    stats_text += "⛔ *添加限制：* 本小时内已达到添加上限，请稍后再试\n\n"
 
             return stats_text
         except Exception as e:
@@ -445,6 +522,17 @@ class HandlerManager:
             await update.message.reply_text(error_message, parse_mode='Markdown')
         
         return False
+
+    def is_update_context_allowed(self, update: Update) -> bool:
+        """Allow private chats and explicitly configured group chats only."""
+        chat = update.effective_chat
+        if not chat:
+            return False
+        if chat.type == "private":
+            return True
+        if chat.type in ("group", "supergroup"):
+            return chat.id in self.config.ALLOWED_GROUP_IDS
+        return False
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理 /start 命令"""
@@ -454,7 +542,7 @@ class HandlerManager:
                 return
             
             user = update.effective_user
-            username = user.first_name or user.username or "用户"
+            username = self.escape_markdown(user.first_name or user.username or "用户")
             
             welcome_text = f"""
 👋 你好，{username}！
@@ -495,6 +583,8 @@ class HandlerManager:
     
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理 /help 命令"""
+        if not await self.check_group_membership(update):
+            return
         await update.message.reply_text(
             self._build_help_text(),
             reply_markup=self._build_help_keyboard(),
@@ -521,6 +611,8 @@ class HandlerManager:
 
     async def query_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理 /query 命令"""
+        if not await self.check_group_membership(update):
+            return
         user_id = update.effective_user.id
         self.set_user_state(user_id, "waiting_query_domain")
 
@@ -536,6 +628,8 @@ class HandlerManager:
 
     async def add_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理 /add 命令"""
+        if not await self.check_group_membership(update):
+            return
         keyboard = [
             [InlineKeyboardButton("➕ 添加直连规则", callback_data="add_direct_rule")],
             [InlineKeyboardButton("➕ 添加代理规则", callback_data="add_proxy_rule")],
@@ -545,13 +639,17 @@ class HandlerManager:
         
         await update.message.reply_text(
             "➕ *添加规则*\n\n请选择要添加的规则类型：",
-            reply_markup=reply_markup
+            reply_markup=reply_markup,
+            parse_mode='Markdown',
         )
     
     async def delete_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理 /delete 命令"""
+        if not await self.check_group_membership(update):
+            return
         await update.message.reply_text(
-            "➖ *删除规则功能暂不可用*\n\n该功能正在开发中，敬请期待。"
+            "➖ *删除规则功能暂不可用*\n\n该功能正在开发中，敬请期待。",
+            parse_mode='Markdown',
         )
     
     async def skip_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -573,12 +671,15 @@ class HandlerManager:
 
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理回调查询"""
+        query = update.callback_query
         try:
+            if not self.is_update_context_allowed(update):
+                await query.answer("当前会话不在允许范围内", show_alert=True)
+                return
             # 检查群组成员身份
             if not await self.check_group_membership(update):
                 return
             
-            query = update.callback_query
             await query.answer()
             
             user_id = update.effective_user.id
@@ -596,9 +697,9 @@ class HandlerManager:
                 await self._show_delete_not_supported(query)
             elif data == "help":
                 await self._show_help(query)
-            elif data.startswith("add_domain_"):
+            elif data.startswith("add_domain|"):
                 await self._handle_add_domain_callback(query, user_id, data)
-            elif data.startswith("confirm_add_"):
+            elif data.startswith("confirm_add|"):
                 await self._handle_confirm_add_callback(query, user_id, data)
             elif data == "skip_description":
                 await self._handle_skip_description(query, user_id)
@@ -722,9 +823,6 @@ class HandlerManager:
                 await processing_msg.edit_text("❌ 无效的域名格式，请重新输入。")
                 return
             
-            # 同时获取二级域名用于规则检查
-            second_level_for_check = extract_second_level_domain_for_rules(domain_input)
-            
             # 检查是否为.cn域名，如果是则直接返回提示
             is_cn = is_cn_domain(domain)
             if is_cn:
@@ -758,7 +856,9 @@ class HandlerManager:
             
             # 1. 检查是否在GitHub规则中
             github_result = await self.github_service.check_domain_in_rules(domain)
-            if github_result.get("exists"):
+            if github_result.get("error"):
+                result_text += "⚠️ *GitHub 规则状态：* 暂时无法读取\n"
+            elif github_result.get("exists"):
                 result_text += "✅ *GitHub 规则状态：* 已存在\n"
                 for match in github_result.get("matches", []):
                     result_text += f"   • 第{match['line']}行: {match['rule']}\n"
@@ -795,22 +895,23 @@ class HandlerManager:
                 
                 # 根据条件显示建议和状态
                 if github_result.get("exists") or in_geosite:
-                    result_text += f"\n✅ *状态：* 域名已在规则中，无需添加\n"
-                elif (not github_result.get("exists") and not in_geosite and 
+                    result_text += "\n✅ *状态：* 域名已在规则中，无需添加\n"
+                elif (not github_result.get("error") and not github_result.get("exists") and not in_geosite and
                     (check_result.get("domain_china_status") or check_result.get("second_level_china_status") or check_result.get("ns_china_status"))):
                     result_text += f"\n💡 *建议：* {check_result['recommendation']}\n"
                 else:
-                    result_text += f"\n ℹ️ *说明：* 域名 IP 和 NS 均不在中国大陆，不建议添加\n"
+                    result_text += "\n ℹ️ *说明：* 域名 IP 和 NS 均不在中国大陆，不建议添加\n"
             
             # 显示操作按钮
             keyboard = []
             
             # 只有当域名不在GitHub规则和GeoSite中，且有中国IP或NS时才推荐添加
             # (.cn域名已经在上面提前处理了，这里不会遇到)
-            if (not github_result.get("exists") and not in_geosite and 
-                "error" not in check_result and 
+            if (not github_result.get("error") and not github_result.get("exists") and not in_geosite and
+                "error" not in check_result and
                 (check_result.get("domain_china_status") or check_result.get("second_level_china_status") or check_result.get("ns_china_status"))):
-                keyboard.append([InlineKeyboardButton("➕ 添加到直连规则", callback_data=f"add_domain_{domain}")])
+                token = self.create_pending_action(user_id, "add_domain", domain=domain)
+                keyboard.append([InlineKeyboardButton("➕ 添加到直连规则", callback_data=f"add_domain|{token}")])
             
             keyboard.append([InlineKeyboardButton("🔍 重新查询", callback_data="query_domain")])
             keyboard.append([InlineKeyboardButton("🏠 返回主菜单", callback_data="main_menu")])
@@ -900,17 +1001,19 @@ class HandlerManager:
             # 显示提取的二级域名信息
             if domain != normalize_domain(domain_input):
                 await processing_msg.edit_text(f"🔍 已提取二级域名：`{domain}`\n\n正在检查域名状态...")
-                await asyncio.sleep(1)  # 给用户时间看到提取结果
             
             # 1. 防重复检查
             await processing_msg.edit_text("🔍 正在检查域名是否已存在...")
             
             # 检查 GitHub 规则
             github_result = await self.github_service.check_domain_in_rules(domain)
+            if github_result.get("error"):
+                await processing_msg.edit_text(f"❌ {github_result['error']}，请稍后重试。")
+                return
             second_level = extract_second_level_domain(domain)
             
             if github_result.get("exists"):
-                result_text = f"❌ *域名已存在于规则中*\n\n"
+                result_text = "❌ *域名已存在于规则中*\n\n"
                 result_text += f"📍 *域名：* `{domain}`\n\n"
                 result_text += "📋 *找到的规则：*\n"
                 for match in github_result.get("matches", []):
@@ -930,7 +1033,7 @@ class HandlerManager:
             if second_level and second_level != domain:
                 second_level_result = await self.github_service.check_domain_in_rules(second_level)
                 if second_level_result.get("exists"):
-                    result_text = f"❌ *二级域名已存在于规则中*\n\n"
+                    result_text = "❌ *二级域名已存在于规则中*\n\n"
                     result_text += f"📍 *输入域名：* `{domain}`\n"
                     result_text += f"📍 *二级域名：* `{second_level}`\n\n"
                     result_text += "📋 *找到的规则：*\n"
@@ -950,7 +1053,7 @@ class HandlerManager:
             # 检查GeoSite
             in_geosite = await self.data_manager.is_domain_in_geosite(domain)
             if in_geosite:
-                result_text = f"❌ *域名已存在于 GEOSITE:CN 中*\n\n"
+                result_text = "❌ *域名已存在于 GEOSITE:CN 中*\n\n"
                 result_text += f"📍 *域名：* `{domain}`\n\n"
                 result_text += "该域名已在 GEOSITE:CN 规则中，不需要重复添加。"
                 
@@ -979,7 +1082,7 @@ class HandlerManager:
             })
             
             # 生成检查结果文本
-            result_text = f"📊 *域名检查结果*\n\n"
+            result_text = "📊 *域名检查结果*\n\n"
             result_text += f"📍 *域名：* `{domain}`\n\n"
             
             # 显示详细信息
@@ -996,8 +1099,14 @@ class HandlerManager:
             should_reject = self.domain_checker.should_reject(check_result)
             if self.domain_checker.should_add_directly(check_result):
                 # 符合条件，提供添加选项
-                keyboard.append([InlineKeyboardButton("✅ 确认添加", callback_data="confirm_add_yes")])
-                keyboard.append([InlineKeyboardButton("❌ 取消添加", callback_data="confirm_add_no")])
+                token = self.create_pending_action(
+                    user_id,
+                    "confirm_add",
+                    domain=domain,
+                    check_result=check_result,
+                )
+                keyboard.append([InlineKeyboardButton("✅ 确认添加", callback_data=f"confirm_add|yes|{token}")])
+                keyboard.append([InlineKeyboardButton("❌ 取消添加", callback_data=f"confirm_add|no|{token}")])
             elif should_reject:
                 # 不符合条件，拒绝添加
                 result_text += "\n❌ *不符合添加条件，无法添加到直连规则。*"
@@ -1006,14 +1115,20 @@ class HandlerManager:
                     keyboard.append([
                         InlineKeyboardButton(
                             "🛡️ 管理员权限添加",
-                            callback_data=self.get_admin_force_add_callback(domain)
+                            callback_data=self.get_admin_force_add_callback(user_id, domain)
                         )
                     ])
                 keyboard.append([InlineKeyboardButton("➕ 添加其他域名", callback_data="add_direct_rule")])
             else:
                 # 默认情况（理论上不会到这里）
-                keyboard.append([InlineKeyboardButton("✅ 确认添加", callback_data="confirm_add_yes")])
-                keyboard.append([InlineKeyboardButton("❌ 取消添加", callback_data="confirm_add_no")])
+                token = self.create_pending_action(
+                    user_id,
+                    "confirm_add",
+                    domain=domain,
+                    check_result=check_result,
+                )
+                keyboard.append([InlineKeyboardButton("✅ 确认添加", callback_data=f"confirm_add|yes|{token}")])
+                keyboard.append([InlineKeyboardButton("❌ 取消添加", callback_data=f"confirm_add|no|{token}")])
             
             keyboard.append([InlineKeyboardButton("🏠 返回主菜单", callback_data="main_menu")])
             
@@ -1030,7 +1145,12 @@ class HandlerManager:
     async def _handle_add_domain_callback(self, query, user_id: int, data: str):
         """处理添加域名回调"""
         try:
-            domain = data.replace("add_domain_", "")
+            token = data.split("|", 1)[1] if "|" in data else ""
+            action = self.get_pending_action(user_id, token, "add_domain", consume=True)
+            if not action:
+                await query.edit_message_text("⌛ 此操作已过期，请重新查询域名。")
+                return
+            domain = action.get("domain", "")
             
             # 进行域名检查
             check_result = await self.domain_checker.check_domain_comprehensive(domain)
@@ -1046,7 +1166,7 @@ class HandlerManager:
             })
             
             # 生成检查结果文本
-            result_text = f"📊 *域名检查结果*\n\n"
+            result_text = "📊 *域名检查结果*\n\n"
             result_text += f"📍 *域名：* `{domain}`\n\n"
             
             detail_lines = self._format_detail_lines(check_result.get("details", []))
@@ -1061,8 +1181,14 @@ class HandlerManager:
             
             should_reject = self.domain_checker.should_reject(check_result)
             if not should_reject:
-                keyboard.append([InlineKeyboardButton("✅ 确认添加", callback_data="confirm_add_yes")])
-                keyboard.append([InlineKeyboardButton("❌ 取消添加", callback_data="confirm_add_no")])
+                confirm_token = self.create_pending_action(
+                    user_id,
+                    "confirm_add",
+                    domain=domain,
+                    check_result=check_result,
+                )
+                keyboard.append([InlineKeyboardButton("✅ 确认添加", callback_data=f"confirm_add|yes|{confirm_token}")])
+                keyboard.append([InlineKeyboardButton("❌ 取消添加", callback_data=f"confirm_add|no|{confirm_token}")])
             else:
                 result_text += "\n❌ *不符合添加条件，无法添加到直连规则。*"
                 if self.is_admin(user_id):
@@ -1070,7 +1196,7 @@ class HandlerManager:
                     keyboard.append([
                         InlineKeyboardButton(
                             "🛡️ 管理员权限添加",
-                            callback_data=self.get_admin_force_add_callback(domain)
+                            callback_data=self.get_admin_force_add_callback(user_id, domain)
                         )
                     ])
             
@@ -1091,12 +1217,20 @@ class HandlerManager:
         try:
             if not self.is_admin(user_id):
                 logger.warning(f"管理员权限操作被拒绝: user_id={user_id}, data={data}")
+                await query.edit_message_text("❌ 当前用户没有管理员权限。")
                 return
 
-            domain = data.split("|", 1)[1].strip() if "|" in data else ""
-            if not domain:
-                await query.edit_message_text("❌ 域名数据丢失，请重新开始。")
+            token = data.split("|", 1)[1] if "|" in data else ""
+            action = self.get_pending_action(
+                user_id,
+                token,
+                "admin_force_add",
+                consume=True,
+            )
+            if not action:
+                await query.edit_message_text("⌛ 此管理员操作已过期，请重新检查域名。")
                 return
+            domain = action.get("domain", "")
 
             domain = extract_second_level_domain_for_rules(domain)
             if not domain:
@@ -1130,8 +1264,11 @@ class HandlerManager:
 
             # 防重复检查
             github_result = await self.github_service.check_domain_in_rules(domain)
+            if github_result.get("error"):
+                await query.edit_message_text(f"❌ {github_result['error']}，请稍后重试。")
+                return
             if github_result.get("exists"):
-                result_text = f"❌ *域名已存在于规则中*\n\n"
+                result_text = "❌ *域名已存在于规则中*\n\n"
                 result_text += f"📍 *域名：* `{domain}`\n\n"
                 result_text += "📋 *找到的规则：*\n"
                 for match in github_result.get("matches", []):
@@ -1147,7 +1284,7 @@ class HandlerManager:
 
             in_geosite = await self.data_manager.is_domain_in_geosite(domain)
             if in_geosite:
-                result_text = f"❌ *域名已存在于 GEOSITE:CN 中*\n\n"
+                result_text = "❌ *域名已存在于 GEOSITE:CN 中*\n\n"
                 result_text += f"📍 *域名：* `{domain}`\n\n"
                 result_text += "该域名已在 GEOSITE:CN 规则中，不需要重复添加。"
 
@@ -1190,7 +1327,7 @@ class HandlerManager:
                 result_text += f"💬 *提交信息：* `{add_result['commit_message']}`\n"
                 result_text += f"\n💡 本小时内还可添加 {remaining} 个域名"
             else:
-                result_text = f"❌ *域名添加失败*\n\n"
+                result_text = "❌ *域名添加失败*\n\n"
                 result_text += f"📍 *域名：* `{target_domain}`\n"
                 result_text += f"❌ *错误：* {self.escape_markdown(add_result.get('error', '未知错误'))}"
 
@@ -1210,7 +1347,20 @@ class HandlerManager:
     async def _handle_confirm_add_callback(self, query, user_id: int, data: str):
         """处理确认添加回调"""
         try:
-            if data == "confirm_add_no":
+            parts = data.split("|", 2)
+            decision = parts[1] if len(parts) == 3 else ""
+            token = parts[2] if len(parts) == 3 else ""
+            domain_data = self.get_pending_action(
+                user_id,
+                token,
+                "confirm_add",
+                consume=True,
+            )
+            if not domain_data:
+                await query.edit_message_text("⌛ 此确认操作已过期，请重新检查域名。")
+                return
+
+            if decision == "no":
                 # 取消添加
                 keyboard = [
                     [InlineKeyboardButton("➕ 添加其他域名", callback_data="add_direct_rule")],
@@ -1226,14 +1376,11 @@ class HandlerManager:
                 self.set_user_state(user_id, "waiting_add_domain")
                 return
             
-            # 确认添加
-            user_state = self.get_user_state(user_id)
-            domain_data = user_state.get("data", {})
-            
-            if not domain_data:
-                await query.edit_message_text("❌ 数据丢失，请重新开始。")
+            if decision != "yes":
+                await query.edit_message_text("❌ 无效的确认操作，请重新开始。")
                 return
-            
+
+            # 确认添加
             domain = domain_data.get("domain")
             if not domain:
                 await query.edit_message_text("❌ 域名数据丢失，请重新开始。")
@@ -1275,8 +1422,8 @@ class HandlerManager:
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 
                 await update.message.reply_text(
-                    f"❌ *说明内容超出限制*\n\n"
-                    f"📏 *限制：* 最多 {self.MAX_DESCRIPTION_LENGTH} 个字符\n"
+                    "❌ *说明内容不符合要求*\n\n"
+                    f"📏 *限制：* 最多 {self.MAX_DESCRIPTION_LENGTH} 个字符，且不能包含换行或控制字符\n"
                     f"📝 *您的输入：* {len(description)} 个字符\n\n"
                     f"✂️ *截取后内容：* `{processed_description}`\n\n"
                     "💡 请重新输入简短的说明，或发送 `/skip` 跳过说明。",
@@ -1331,7 +1478,7 @@ class HandlerManager:
                 # 获取剩余添加次数
                 _, remaining = self.check_user_add_limit(user_id)
                 
-                result_text = f"✅ *域名添加成功！*\n\n"
+                result_text = "✅ *域名添加成功！*\n\n"
                 result_text += f"📍 *域名：* `{target_domain}`\n"
                 result_text += f"👤 *提交者：* @{self.escape_markdown(username)}\n"
                 if description:
@@ -1343,7 +1490,7 @@ class HandlerManager:
                 result_text += f"💬 *提交信息：* `{add_result['commit_message']}`\n"
                 result_text += f"\n💡 本小时内还可添加 {remaining} 个域名"
             else:
-                result_text = f"❌ *域名添加失败*\n\n"
+                result_text = "❌ *域名添加失败*\n\n"
                 result_text += f"📍 *域名：* `{target_domain}`\n"
                 result_text += f"❌ *错误：* {self.escape_markdown(add_result.get('error', '未知错误'))}"
             
@@ -1396,7 +1543,7 @@ class HandlerManager:
                 # 获取剩余添加次数
                 _, remaining = self.check_user_add_limit(user_id)
                 
-                result_text = f"✅ *域名添加成功！*\n\n"
+                result_text = "✅ *域名添加成功！*\n\n"
                 result_text += f"📍 *域名：* `{target_domain}`\n"
                 result_text += f"👤 *提交者：* @{self.escape_markdown(username)}\n"
                 if description:
@@ -1408,7 +1555,7 @@ class HandlerManager:
                 result_text += f"💬 *提交信息：* `{add_result['commit_message']}`\n"
                 result_text += f"\n💡 本小时内还可添加 {remaining} 个域名"
             else:
-                result_text = f"❌ *域名添加失败*\n\n"
+                result_text = "❌ *域名添加失败*\n\n"
                 result_text += f"📍 *域名：* `{target_domain}`\n"
                 result_text += f"❌ *错误：* {self.escape_markdown(add_result.get('error', '未知错误'))}"
             

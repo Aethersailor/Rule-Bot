@@ -4,7 +4,7 @@
 """
 
 import asyncio
-from typing import Dict, List, Any, Optional
+from typing import Dict, Any, Optional
 from loguru import logger
 
 from .dns_service import DNSService
@@ -41,6 +41,7 @@ class DomainChecker:
                 "domain_china_status": False,
                 "second_level_china_status": False,
                 "ns_china_status": False,
+                "lookup_status": "pending",
                 "recommendation": "",
                 "details": []
             }
@@ -146,6 +147,22 @@ class DomainChecker:
                         result["details"].append(f"{ns}: {foreign_count} 个海外 IP")
             else:
                 result["details"].append("无法查询到 NS 记录")
+
+            # Do not turn a resolver outage or an unresolvable domain into a
+            # confident "foreign" verdict. At least one address must have
+            # been observed before location-based policy can be applied.
+            observed_ips = (
+                result["domain_ips"]
+                + result["second_level_ips"]
+                + result["ns_ips"]
+            )
+            if not observed_ips:
+                result["lookup_status"] = "unknown"
+                result["error"] = "暂时无法获取有效的 DNS 地址数据，请稍后重试"
+                result["recommendation"] = "⚠️ 当前无法可靠判断域名归属，请稍后重试"
+                return result
+
+            result["lookup_status"] = "ok"
             
             # 生成建议
             result["recommendation"] = self._generate_recommendation(result)
@@ -185,6 +202,8 @@ class DomainChecker:
     def should_add_directly(self, check_result: Dict[str, Any]) -> bool:
         """判断是否应该直接添加（无需用户确认）"""
         try:
+            if check_result.get("error") or check_result.get("lookup_status") != "ok":
+                return False
             domain_china = check_result["domain_china_status"]
             second_level_china = check_result["second_level_china_status"]
             ns_china = check_result["ns_china_status"]
@@ -212,6 +231,8 @@ class DomainChecker:
     def should_reject(self, check_result: Dict[str, Any]) -> bool:
         """判断是否应该拒绝添加"""
         try:
+            if check_result.get("error") or check_result.get("lookup_status") != "ok":
+                return False
             domain_china = check_result["domain_china_status"]
             second_level_china = check_result["second_level_china_status"]
             ns_china = check_result["ns_china_status"]
@@ -229,6 +250,8 @@ class DomainChecker:
             # 检查 check_result 是否有效
             if not check_result or not isinstance(check_result, dict):
                 logger.warning(f"无效的 check_result: {check_result}")
+                return None
+            if check_result.get("error") or check_result.get("lookup_status") != "ok":
                 return None
             
             # 安全获取值，提供默认值

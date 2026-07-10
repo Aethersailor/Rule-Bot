@@ -6,10 +6,12 @@ DNS 服务模块
 import aiohttp
 import asyncio
 import base64
-import struct
-import socket
 import time
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict
+import dns.edns
+import dns.message
+import dns.rcode
+import dns.rdatatype
 from loguru import logger
 
 from ..utils.cache import TTLCache
@@ -105,6 +107,7 @@ class DNSService:
                         for task in tasks:
                             if not task.done():
                                 task.cancel()
+                        await asyncio.gather(*tasks, return_exceptions=True)
                         METRICS.record_request(
                             "dns.query_a",
                             (time.perf_counter() - start_ts) * 1000,
@@ -122,7 +125,6 @@ class DNSService:
                 success=False
             )
             return []
-            
         except Exception as e:
             logger.error(f"DNS 查询失败: {e}")
             METRICS.record_request(
@@ -167,6 +169,7 @@ class DNSService:
                         for task in tasks:
                             if not task.done():
                                 task.cancel()
+                        await asyncio.gather(*tasks, return_exceptions=True)
                         METRICS.record_request(
                             "dns.query_ns",
                             (time.perf_counter() - start_ts) * 1000,
@@ -209,70 +212,36 @@ class DNSService:
     async def _query_ns_system_dns(self, domain: str) -> List[str]:
         """使用系统 DNS 查询 NS 记录作为备用方案"""
         try:
-            import dns.resolver
-            import dns.rdatatype
-            
-            # 创建解析器
-            resolver = dns.resolver.Resolver()
-            resolver.timeout = 10
-            resolver.lifetime = 10
-            
-            # 查询 NS 记录
-            answers = resolver.resolve(domain, dns.rdatatype.NS)
-            ns_servers = [str(rdata).rstrip('.') for rdata in answers]
+            ns_servers = await asyncio.to_thread(self._query_ns_system_dns_sync, domain)
             
             logger.debug(f"系统 DNS 查询 {domain} NS 记录成功，获得 {len(ns_servers)} 个 NS 服务器")
             return ns_servers
             
-        except ImportError:
-            logger.warning("dnspython 库未安装，无法使用系统 DNS 备用查询")
-            return []
         except Exception as e:
             logger.warning(f"系统 DNS 查询 NS 记录失败: {e}")
             return []
+
+    @staticmethod
+    def _query_ns_system_dns_sync(domain: str) -> List[str]:
+        """Run the blocking system resolver outside the event loop."""
+        import dns.resolver
+
+        resolver = dns.resolver.Resolver()
+        resolver.timeout = 3
+        resolver.lifetime = 6
+        answers = resolver.resolve(domain, dns.rdatatype.NS)
+        return [str(rdata).rstrip(".") for rdata in answers]
     
     def _build_dns_query(self, domain: str, use_edns_china: bool = True, record_type: int = 1) -> bytes:
         """构建 DNS 查询数据包"""
         try:
-            # DNS 头部 (12 字节)
-            transaction_id = 0x1234
-            flags = 0x0100  # 标准查询
-            questions = 1
-            answer_rrs = 0
-            authority_rrs = 0
-            additional_rrs = 1 if use_edns_china else 0
-            
-            header = struct.pack('!HHHHHH', 
-                               transaction_id, flags, questions, 
-                               answer_rrs, authority_rrs, additional_rrs)
-            
-            # 构建查询部分
-            query = b''
-            for label in domain.split('.'):
-                query += struct.pack('!B', len(label)) + label.encode('ascii')
-            query += b'\x00'  # 结束标志
-            
-            query += struct.pack('!HH', record_type, 1)  # Type A/NS, Class IN
-            
-            # 如果使用 EDNS，添加 OPT 记录以模拟中国境内查询
-            edns = b''
+            query = dns.message.make_query(domain, record_type)
             if use_edns_china:
-                # OPT 记录格式
-                edns += b'\x00'  # Name (root)
-                edns += struct.pack('!H', 41)  # Type OPT
-                edns += struct.pack('!H', 4096)  # UDP payload size
-                edns += struct.pack('!H', 0)  # Extended RCODE and flags
-                edns += struct.pack('!H', 8)  # RDLEN (8 bytes for ECS)
-                
-                # ECS (EDNS Client Subnet) 选项
-                edns += struct.pack('!H', 8)  # Option code (ECS)
-                edns += struct.pack('!H', 4)  # Option length
-                edns += struct.pack('!H', 1)  # Family (IPv4)
-                edns += struct.pack('!BB', 24, 0)  # Source netmask, Scope netmask
-                # 使用中国的 IP 段 (例如: 219.0.0.0/24)
-                edns += struct.pack('!BBB', 219, 0, 0)
-            
-            return header + query + edns
+                query.use_edns(
+                    payload=4096,
+                    options=[dns.edns.ECSOption("219.0.0.0", 24, 0)],
+                )
+            return query.to_wire()
             
         except Exception as e:
             logger.error(f"构建 DNS 查询包失败: {e}")
@@ -313,8 +282,9 @@ class DNSService:
                             
             except asyncio.CancelledError:
                 raise # 允许被取消
-            except Exception as e:
-                # logger.debug(f"{server_name} query failed (attempt {attempt+1}): {e}")
+            except Exception:
+                # A single endpoint failure is expected; the caller races
+                # several independent resolvers.
                 pass
             
             # 如果不是最后一次尝试，等待一小会儿
@@ -327,64 +297,15 @@ class DNSService:
     def _parse_dns_response_a(self, response_data: bytes) -> List[str]:
         """解析 DNS 响应中的 A 记录"""
         try:
-            if len(response_data) < 12:
+            response = dns.message.from_wire(response_data)
+            if response.rcode() != dns.rcode.NOERROR:
                 return []
-            
-            # 解析头部
-            header = struct.unpack('!HHHHHH', response_data[:12])
-            answer_count = header[3]
-            
-            if answer_count == 0:
-                return []
-            
-            # 跳过查询部分
-            offset = 12
-            
-            # 跳过查询名称
-            while offset < len(response_data) and response_data[offset] != 0:
-                length = response_data[offset]
-                if length > 63:  # 压缩指针
-                    offset += 2
-                    break
-                offset += length + 1
-            
-            if offset < len(response_data) and response_data[offset] == 0:
-                offset += 1
-            
-            offset += 4  # 跳过Type和Class
-            
-            # 解析答案
-            ips = []
-            for _ in range(answer_count):
-                if offset >= len(response_data):
-                    break
-                
-                # 跳过名称
-                if response_data[offset] & 0xC0:  # 压缩指针
-                    offset += 2
-                else:
-                    while offset < len(response_data) and response_data[offset] != 0:
-                        offset += response_data[offset] + 1
-                    offset += 1
-                
-                if offset + 10 > len(response_data):
-                    break
-                
-                # 读取Type, Class, TTL, RDLength
-                rr_data = struct.unpack('!HHIH', response_data[offset:offset+10])
-                rr_type = rr_data[0]
-                rd_length = rr_data[3]
-                offset += 10
-                
-                # 如果是A记录 (Type 1) 且长度为4
-                if rr_type == 1 and rd_length == 4 and offset + 4 <= len(response_data):
-                    ip_bytes = response_data[offset:offset+4]
-                    ip = '.'.join(str(b) for b in ip_bytes)
-                    ips.append(ip)
-                
-                offset += rd_length
-            
-            return ips
+            return list(dict.fromkeys(
+                rdata.address
+                for rrset in response.answer
+                if rrset.rdtype == dns.rdatatype.A
+                for rdata in rrset
+            ))
             
         except Exception as e:
             logger.error(f"解析 DNS 响应失败: {e}")
@@ -393,101 +314,16 @@ class DNSService:
     def _parse_dns_response_ns(self, response_data: bytes) -> List[str]:
         """解析 DNS 响应中的 NS 记录"""
         try:
-            if len(response_data) < 12:
+            response = dns.message.from_wire(response_data)
+            if response.rcode() != dns.rcode.NOERROR:
                 return []
-            
-            # 解析头部
-            header = struct.unpack('!HHHHHH', response_data[:12])
-            answer_count = header[3]
-            
-            if answer_count == 0:
-                return []
-            
-            # 跳过查询部分
-            offset = 12
-            
-            # 跳过查询名称
-            while offset < len(response_data) and response_data[offset] != 0:
-                length = response_data[offset]
-                if length > 63:  # 压缩指针
-                    offset += 2
-                    break
-                offset += length + 1
-            
-            if offset < len(response_data) and response_data[offset] == 0:
-                offset += 1
-            
-            offset += 4  # 跳过Type和Class
-            
-            # 解析答案
-            ns_servers = []
-            for _ in range(answer_count):
-                if offset >= len(response_data):
-                    break
-                
-                # 跳过名称
-                if offset < len(response_data) and response_data[offset] & 0xC0:  # 压缩指针
-                    offset += 2
-                else:
-                    while offset < len(response_data) and response_data[offset] != 0:
-                        offset += response_data[offset] + 1
-                    if offset < len(response_data):
-                        offset += 1
-                
-                if offset + 10 > len(response_data):
-                    break
-                
-                # 读取Type, Class, TTL, RDLength
-                rr_data = struct.unpack('!HHIH', response_data[offset:offset+10])
-                rr_type = rr_data[0]
-                rd_length = rr_data[3]
-                offset += 10
-                
-                # 如果是 NS 记录 (Type 2)
-                if rr_type == 2 and offset + rd_length <= len(response_data):
-                    ns_name = self._parse_domain_name(response_data, offset)
-                    if ns_name:
-                        ns_servers.append(ns_name)
-                
-                offset += rd_length
-            
-            return ns_servers
+            return list(dict.fromkeys(
+                str(rdata.target).rstrip(".")
+                for rrset in response.answer
+                if rrset.rdtype == dns.rdatatype.NS
+                for rdata in rrset
+            ))
             
         except Exception as e:
             logger.error(f"解析 NS 记录失败: {e}")
             return []
-    
-    def _parse_domain_name(self, data: bytes, offset: int) -> str:
-        """解析 DNS 响应中的域名（处理压缩指针）"""
-        try:
-            labels = []
-            original_offset = offset
-            jumped = False
-            
-            while offset < len(data):
-                length = data[offset]
-                
-                if length == 0:
-                    break
-                elif length & 0xC0 == 0xC0:  # 压缩指针
-                    if not jumped:
-                        original_offset = offset + 2
-                        jumped = True
-                    # 计算指针位置
-                    pointer = ((length & 0x3F) << 8) | data[offset + 1]
-                    offset = pointer
-                    continue
-                else:
-                    offset += 1
-                    if offset + length > len(data):
-                        break
-                    label = data[offset:offset + length].decode('ascii', errors='ignore')
-                    labels.append(label)
-                    offset += length
-            
-            domain = '.'.join(labels)
-            return domain if domain else ""
-            
-        except Exception as e:
-            logger.error(f"解析域名失败: {e}")
-            return "" 

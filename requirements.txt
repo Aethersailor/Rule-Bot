@@ -6,4 +6,4 @@ loguru==0.7.3
 psutil==7.2.2
 geoip2==5.2.0
 maxminddb==3.1.1
-publicsuffix2==2.20191221
+publicsuffixlist==1.0.2.20260710

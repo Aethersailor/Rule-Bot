@@ -3,18 +3,20 @@ Telegram 机器人主控制器
 """
 
 import asyncio
+from pathlib import Path
 from typing import Optional
 from loguru import logger
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, 
-    MessageHandler, filters, ContextTypes
+    MessageHandler, filters
 )
 
 from .config import Config
 from .data_manager import DataManager
 from .handlers import HandlerManager, GroupHandler
+from .healthcheck import HEALTH_PATH
+from .update_processor import PerUserUpdateProcessor
 from .utils.metrics import EXPORTER
 
 
@@ -28,6 +30,16 @@ class RuleBot:
         self.handler_manager = None  # 延迟初始化
         self.group_handler = None  # 群组处理器
         self._metrics_task = None
+        self._heartbeat_task = None
+
+    async def _heartbeat_loop(self):
+        HEALTH_PATH.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            HEALTH_PATH.touch()
+            await asyncio.sleep(15)
+
+    async def _error_handler(self, update, context):
+        logger.error("Telegram 更新处理异常: {}", context.error)
     
     async def stop(self):
         """停止机器人"""
@@ -36,6 +48,13 @@ class RuleBot:
             await self.handler_manager.stop()
         if self._metrics_task:
             await EXPORTER.stop()
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self._heartbeat_task = None
         if self.app:
             try:
                 if self.app.updater and self.app.updater.running:
@@ -54,15 +73,24 @@ class RuleBot:
                 logger.debug(f"关闭 app 失败: {e}")
         if self.data_manager:
             await self.data_manager.close()
+        try:
+            Path(HEALTH_PATH).unlink(missing_ok=True)
+        except OSError:
+            pass
         logger.info("机器人已停止")
 
-    async def start(self):
+    async def start(self, stop_event: Optional[asyncio.Event] = None):
         """启动机器人"""
         try:
             # 创建应用
-            self.app = Application.builder().token(self.config.TELEGRAM_BOT_TOKEN).build()
-            
-        # 初始化处理器管理器（需要 app 实例）
+            self.app = (
+                Application.builder()
+                .token(self.config.TELEGRAM_BOT_TOKEN)
+                .concurrent_updates(PerUserUpdateProcessor(8))
+                .build()
+            )
+
+            # 初始化处理器管理器（需要 app 实例）
             self.handler_manager = HandlerManager(self.config, self.data_manager, self.app)
             
             # 初始化群组处理器
@@ -79,11 +107,20 @@ class RuleBot:
                 await self.app.start()
                 self._metrics_task = EXPORTER.start()
                 await self.app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True  # 丢弃待处理的更新，避免发送旧消息
+                    allowed_updates=["message", "callback_query"],
+                    drop_pending_updates=False,
                 )
-                # 保持运行
-                await asyncio.Event().wait()
+                self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+                try:
+                    # 保持运行
+                    await (stop_event or asyncio.Event()).wait()
+                finally:
+                    # Application's context manager performs shutdown only
+                    # after the updater and application have stopped.
+                    if self.app.updater and self.app.updater.running:
+                        await self.app.updater.stop()
+                    if self.app.running:
+                        await self.app.stop()
             
         except Exception as e:
             logger.error(f"机器人启动失败: {e}")
@@ -94,13 +131,14 @@ class RuleBot:
     def _register_handlers(self):
         """注册所有处理器"""
         # 命令处理器
-        self.app.add_handler(CommandHandler("start", self.handler_manager.start_command))
-        self.app.add_handler(CommandHandler("help", self.handler_manager.help_command))
-        self.app.add_handler(CommandHandler("id", self.handler_manager.id_command))
-        self.app.add_handler(CommandHandler("query", self.handler_manager.query_command))
-        self.app.add_handler(CommandHandler("add", self.handler_manager.add_command))
-        self.app.add_handler(CommandHandler("delete", self.handler_manager.delete_command))
-        self.app.add_handler(CommandHandler("skip", self.handler_manager.skip_command))
+        private_only = filters.ChatType.PRIVATE
+        self.app.add_handler(CommandHandler("start", self.handler_manager.start_command, filters=private_only))
+        self.app.add_handler(CommandHandler("help", self.handler_manager.help_command, filters=private_only))
+        self.app.add_handler(CommandHandler("id", self.handler_manager.id_command, filters=private_only))
+        self.app.add_handler(CommandHandler("query", self.handler_manager.query_command, filters=private_only))
+        self.app.add_handler(CommandHandler("add", self.handler_manager.add_command, filters=private_only))
+        self.app.add_handler(CommandHandler("delete", self.handler_manager.delete_command, filters=private_only))
+        self.app.add_handler(CommandHandler("skip", self.handler_manager.skip_command, filters=private_only))
         
         # 回调查询处理器
         self.app.add_handler(CallbackQueryHandler(self.handler_manager.handle_callback))
@@ -119,5 +157,6 @@ class RuleBot:
             filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, 
             self.handler_manager.handle_message
         ))
+        self.app.add_error_handler(self._error_handler)
         
         logger.info("所有处理器注册完成") 

@@ -3,12 +3,13 @@
 """
 
 import re
+import ipaddress
 from typing import Optional
 from urllib.parse import urlparse
 
 try:
-    from publicsuffix2 import PublicSuffixList
-    _PSL = PublicSuffixList()
+    from publicsuffixlist import PublicSuffixList
+    _PSL = PublicSuffixList(accept_unknown=False)
 except ImportError:
     _PSL = None
 
@@ -45,6 +46,13 @@ def extract_domain(url_or_domain: str) -> Optional[str]:
         
         # 移除前后空格和特殊字符
         domain = domain.strip(' \t\n\r\f\v.,;')
+
+        # Telegram accepts Unicode domains. Convert them to the ASCII form used
+        # by DNS and rule providers before validation.
+        try:
+            domain = domain.encode("idna").decode("ascii")
+        except UnicodeError:
+            return None
         
         # 验证域名格式
         if not is_valid_domain(domain):
@@ -69,7 +77,11 @@ def extract_second_level_domain(domain: str) -> Optional[str]:
             return None
 
         if _PSL:
-            return _PSL.get_sld(domain)
+            registrable = _PSL.privatesuffix(domain)
+            public_suffix = _PSL.publicsuffix(domain)
+            if not registrable or not public_suffix or registrable == public_suffix:
+                return None
+            return registrable
         
         # 分割域名
         parts = domain.split('.')
@@ -183,9 +195,17 @@ def is_valid_domain(domain: str) -> bool:
     if not domain:
         return False
     
-    # 基本长度检查
-    if len(domain) > 253:
+    domain = domain.rstrip(".")
+
+    # 规则文件只接受可注册域名，不接受单标签主机名或 IP 地址。
+    if len(domain) > 253 or "." not in domain:
         return False
+
+    try:
+        ipaddress.ip_address(domain)
+        return False
+    except ValueError:
+        pass
     
     # 域名正则表达式
     pattern = r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$'

@@ -9,6 +9,7 @@ from src.utils.domain_utils import (
     extract_second_level_domain,
     extract_second_level_domain_for_rules,
     normalize_domain,
+    is_valid_domain,
 )
 
 
@@ -32,6 +33,17 @@ class TestDomainUtils(unittest.TestCase):
 
     def test_normalize_domain(self):
         self.assertEqual(normalize_domain("HTTP://WWW.Example.Com"), "example.com")
+
+    def test_rejects_public_suffix_ip_and_single_label(self):
+        self.assertFalse(is_valid_domain("localhost"))
+        self.assertFalse(is_valid_domain("1.2.3.4"))
+        self.assertIsNone(extract_second_level_domain("a.b.unknown-suffix"))
+
+    def test_unicode_domain_is_normalized_to_idna(self):
+        self.assertEqual(
+            extract_domain("https://例子.中国/path"),
+            "xn--fsqu00a.xn--fiqs8s",
+        )
 
 
 if __name__ == '__main__':

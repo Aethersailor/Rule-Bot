@@ -142,8 +142,8 @@ docker compose logs -f rule-bot
 | `METRICS_EXPORT_PATH` | metrics 输出路径 | `/tmp/rule-bot-metrics.json` |
 | `METRICS_EXPORT_INTERVAL` | metrics 导出间隔秒数 | `30` |
 | `METRICS_RESET_ON_EXPORT` | 导出后清零 | `false` |
-| `MEMORY_SOFT_LIMIT_MB` | 进程软限制 MB | `256` |
-| `MEMORY_HARD_LIMIT_MB` | 进程硬限制 MB | `512` |
+| `MEMORY_SOFT_LIMIT_MB` | 可选进程软限制 MB | 空（交由容器/宿主机管理） |
+| `MEMORY_HARD_LIMIT_MB` | 可选进程硬限制 MB | 空（交由容器/宿主机管理） |
 | `MEMORY_TRIM_ENABLED` | 启用内存修剪 | `true` |
 
 </details>
@@ -193,9 +193,9 @@ docker compose logs -f rule-bot
 
 ## 🐳 镜像与版本
 
-- `latest`：稳定版
-- `dev`：开发版
-- `vX.Y.Z`：发布标签
+- `latest`：唯一发布标签，对应 `master` 分支通过测试后的多架构镜像
+
+镜像内置事件循环心跳健康检查；部署者不需要增加端口、环境变量或额外配置。
 
 ## 🧩 常见问题
 

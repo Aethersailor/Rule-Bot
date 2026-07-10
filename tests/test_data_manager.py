@@ -98,12 +98,13 @@ class TestDataManagerScheduling(unittest.IsolatedAsyncioTestCase):
             manager.geoip_meta.write_text(json.dumps(meta), encoding="utf-8")
 
             with patch.object(manager, "_get_session", AsyncMock(return_value=fake_session)):
-                changed = await manager._download_with_fallback(
-                    ["https://example.test/geoip.mmdb"],
-                    manager.geoip_file,
-                    "geoip",
-                    manager.geoip_meta,
-                )
+                with patch.object(manager, "_validate_download"):
+                    changed = await manager._download_with_fallback(
+                        ["https://example.test/geoip.mmdb"],
+                        manager.geoip_file,
+                        "geoip",
+                        manager.geoip_meta,
+                    )
 
             self.assertTrue(changed)
             self.assertEqual(fake_session.calls[0]["headers"], {})

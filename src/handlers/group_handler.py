@@ -61,7 +61,7 @@ class GroupHandler:
         for entity in message.entities:
             if entity.type != "mention":
                 continue
-            mention_text = message.text[entity.offset:entity.offset + entity.length]
+            mention_text = message.parse_entity(entity)
             if mention_text.lower() == f"@{bot_username.lower()}":
                 return True
         
@@ -227,7 +227,7 @@ class GroupHandler:
                 _, remaining = self.handler_manager.check_user_add_limit(user_id)
                 escaped_username = self.handler_manager.escape_markdown(username)
                 
-                result_text = f"✅ *域名添加成功！*\n\n"
+                result_text = "✅ *域名添加成功！*\n\n"
                 result_text += f"📍 *域名：* `{domain}`\n"
                 result_text += f"👤 *提交者：* @{escaped_username}\n"
                 if result.get("commit_url"):
@@ -235,12 +235,12 @@ class GroupHandler:
                 result_text += f"\n💡 本小时内还可添加 {remaining} 个域名"
                 
             elif result["action"] == "exists":
-                result_text = f"ℹ️ *域名已存在*\n\n"
+                result_text = "ℹ️ *域名已存在*\n\n"
                 result_text += f"📍 *域名：* `{domain}`\n"
                 result_text += f"📋 {result['message']}"
                 
             elif result["action"] == "rejected":
-                result_text = f"❌ *无法添加域名*\n\n"
+                result_text = "❌ *无法添加域名*\n\n"
                 result_text += f"📍 *域名：* `{domain}`\n"
                 result_text += f"📋 {result['message']}"
                 if self.handler_manager.is_admin(user_id):
@@ -248,13 +248,13 @@ class GroupHandler:
                     keyboard = [
                         [InlineKeyboardButton(
                             "🛡️ 管理员权限添加",
-                            callback_data=self.handler_manager.get_admin_force_add_callback(domain)
+                            callback_data=self.handler_manager.get_admin_force_add_callback(user_id, domain)
                         )]
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
                 
             else:  # error
-                result_text = f"❌ *处理失败*\n\n"
+                result_text = "❌ *处理失败*\n\n"
                 result_text += f"📍 *域名：* `{domain}`\n"
                 result_text += f"❌ {result['message']}"
 

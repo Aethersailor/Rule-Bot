@@ -8,12 +8,14 @@ import base64
 import io
 import time
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict, Any
 from loguru import logger
 from github import Auth, Github, GithubException, InputGitAuthor
 
 from ..config import Config
 from ..utils.cache import TTLCache
+from ..utils.domain_utils import normalize_domain
+from ..utils.input_safety import sanitize_identity, validate_single_line_text
 from ..utils.metrics import METRICS
 
 
@@ -24,11 +26,19 @@ class GitHubService:
         self.config = config
         self.github = Github(auth=Auth.Token(config.GITHUB_TOKEN))
         self.repo = None
+        self._write_lock = asyncio.Lock()
         self._file_cache = TTLCache(
             getattr(config, "GITHUB_FILE_CACHE_SIZE", 0),
             getattr(config, "GITHUB_FILE_CACHE_TTL", 0)
         )
         self._initialize_repo()
+
+    def close(self) -> None:
+        """Release the underlying HTTP session."""
+        try:
+            self.github.close()
+        except Exception as e:
+            logger.debug("关闭 GitHub 客户端失败: {}", e)
 
     @staticmethod
     def _is_managed_rule_comment(line: str) -> bool:
@@ -99,7 +109,7 @@ class GitHubService:
             
             # 测试文件访问
             try:
-                file_content = self.repo.get_contents(
+                self.repo.get_contents(
                     self.config.DIRECT_RULE_FILE,
                     **self._get_contents_kwargs()
                 )
@@ -210,8 +220,8 @@ class GitHubService:
                 file_path = self.config.DIRECT_RULE_FILE
             
             content = await self.get_rule_file_content(file_path)
-            if not content:
-                return {"exists": False, "details": []}
+            if content is None:
+                return {"exists": None, "error": "暂时无法读取 GitHub 规则文件"}
             
             # CPU密集型操作也在线程池中执行，避免阻塞事件循环
             def _process_content():
@@ -263,10 +273,35 @@ class GitHubService:
         user_name: str,
         description: str = "",
         file_path: str = None,
+        force_add: bool = False,
+    ) -> Dict[str, Any]:
+        """Serialize repository writes and make duplicate callbacks idempotent."""
+        async with self._write_lock:
+            return await self._add_domain_to_rules_unlocked(
+                domain,
+                user_name,
+                description,
+                file_path,
+                force_add,
+            )
+
+    async def _add_domain_to_rules_unlocked(
+        self,
+        domain: str,
+        user_name: str,
+        description: str = "",
+        file_path: str = None,
         force_add: bool = False
     ) -> Dict[str, Any]:
         """添加域名到规则文件"""
         try:
+            normalized_domain = normalize_domain(domain)
+            if not normalized_domain or normalized_domain != domain.strip().lower():
+                return {"success": False, "error": "无效或不安全的域名格式"}
+            domain = normalized_domain
+            user_name = sanitize_identity(user_name)
+            description = validate_single_line_text(description, 20)
+
             if not file_path:
                 file_path = self.config.DIRECT_RULE_FILE
 
@@ -418,7 +453,10 @@ class GitHubService:
                 }
 
             return {"success": False, "error": "GitHub 更新冲突，多次重试失败"}
-            
+
+        except ValueError as e:
+            logger.warning("拒绝不安全的规则元数据: {}", e)
+            return {"success": False, "error": str(e)}
         except GithubException as e:
             error_details = getattr(e, 'data', {})
             error_message = error_details.get('message', str(e)) if error_details else str(e)
@@ -434,9 +472,23 @@ class GitHubService:
                 logger.error(f"详细错误堆栈: {tb_str}")
             return {"success": False, "error": error_msg}
     
-    async def remove_domain_from_rules(self, domain: str, user_name: str, file_path: str = None) -> Dict[str, Any]:
+    async def remove_domain_from_rules(
+        self,
+        domain: str,
+        user_name: str,
+        file_path: str = None,
+    ) -> Dict[str, Any]:
+        async with self._write_lock:
+            return await self._remove_domain_from_rules_unlocked(domain, user_name, file_path)
+
+    async def _remove_domain_from_rules_unlocked(self, domain: str, user_name: str, file_path: str = None) -> Dict[str, Any]:
         """从规则文件中删除域名"""
         try:
+            normalized_domain = normalize_domain(domain)
+            if not normalized_domain or normalized_domain != domain.strip().lower():
+                return {"success": False, "error": "无效或不安全的域名格式"}
+            domain = normalized_domain
+            user_name = sanitize_identity(user_name)
             if not file_path:
                 file_path = self.config.DIRECT_RULE_FILE
 

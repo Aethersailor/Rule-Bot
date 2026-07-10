@@ -127,7 +127,22 @@ class GeoIPService:
             return
 
         try:
-            ranges = []
+            ranges, starts = self._read_cn_ipv4_ranges()
+            if not ranges:
+                logger.warning("中国 IPv4 CIDR 数据为空，回退检查不可用")
+                return
+
+            self._cn_ipv4_ranges = ranges
+            self._cn_ipv4_range_starts = starts
+            logger.info("中国 IPv4 CIDR 数据加载完成: {} 段", len(ranges))
+        except Exception as e:
+            logger.error(f"加载中国 IPv4 CIDR 数据失败: {e}")
+
+    def _read_cn_ipv4_ranges(self):
+        ranges = []
+        if not self.cn_ipv4_file or not self.cn_ipv4_file.exists():
+            return [], []
+        try:
             with open(self.cn_ipv4_file, 'r', encoding='utf-8') as f:
                 for line in f:
                     line = line.strip()
@@ -143,10 +158,6 @@ class GeoIPService:
                         end = int(network.broadcast_address)
                         ranges.append((start, end))
 
-            if not ranges:
-                logger.warning("中国 IPv4 CIDR 数据为空，回退检查不可用")
-                return
-
             ranges.sort(key=lambda item: item[0])
             merged = []
             for start, end in ranges:
@@ -155,11 +166,48 @@ class GeoIPService:
                 else:
                     merged[-1][1] = max(merged[-1][1], end)
 
-            self._cn_ipv4_ranges = [(start, end) for start, end in merged]
-            self._cn_ipv4_range_starts = [start for start, _ in self._cn_ipv4_ranges]
-            logger.info("中国 IPv4 CIDR 数据加载完成: {} 段", len(self._cn_ipv4_ranges))
+            normalized = [(start, end) for start, end in merged]
+            return normalized, [start for start, _ in normalized]
         except Exception as e:
-            logger.error(f"加载中国 IPv4 CIDR 数据失败: {e}")
+            raise ValueError(f"加载中国 IPv4 CIDR 数据失败: {e}") from e
+
+    def reload(self) -> bool:
+        """Atomically switch readers and CIDR ranges after a data refresh."""
+        new_reader = None
+        try:
+            if GEOIP2_AVAILABLE and self.geoip_file.exists():
+                new_reader = geoip2.database.Reader(str(self.geoip_file))
+            ranges, starts = self._read_cn_ipv4_ranges()
+            if not ranges:
+                if new_reader:
+                    new_reader.close()
+                raise ValueError("中国 IPv4 CIDR 数据为空")
+
+            old_reader = self.reader
+            self.reader = new_reader
+            self._cn_ipv4_ranges = ranges
+            self._cn_ipv4_range_starts = starts
+            if self._location_cache:
+                self._location_cache.clear()
+            if old_reader:
+                old_reader.close()
+            logger.info("GeoIP/CIDR 数据已热重载")
+            return True
+        except Exception as e:
+            if new_reader and new_reader is not self.reader:
+                try:
+                    new_reader.close()
+                except Exception:
+                    pass
+            logger.error("GeoIP/CIDR 热重载失败，继续使用旧数据: {}", e)
+            return False
+
+    def close(self) -> None:
+        if self.reader:
+            try:
+                self.reader.close()
+            finally:
+                self.reader = None
     
     def is_china_ip(self, ip: str) -> bool:
         """检查是否为中国 IP"""
@@ -231,9 +279,8 @@ class GeoIPService:
     
     def __del__(self):
         """关闭数据库连接"""
-        if self.reader:
-            try:
-                self.reader.close()
-            except Exception:
-                pass
+        try:
+            self.close()
+        except Exception:
+            pass
  

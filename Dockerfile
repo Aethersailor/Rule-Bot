@@ -18,8 +18,6 @@ RUN apk add --no-cache \
     openssl-dev \
     pkgconfig
 
-# 设置 Rust 编译优化
-ENV RUSTFLAGS="-C target-cpu=native"
 ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
 ENV CARGO_BUILD_JOBS=4
 ENV OPENSSL_DIR=/usr
@@ -30,12 +28,9 @@ ENV PKG_CONFIG_LIBDIR=/usr/lib/pkgconfig
 # 复制依赖文件
 COPY requirements.txt .
 
-# 预编译所有包为wheel格式，使用并行编译
-RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt \
-    && pip install --no-cache-dir --upgrade pip setuptools wheel \
-    || (echo "Wheel build failed, trying with pre-built packages..." && \
-    pip install --no-cache-dir --only-binary=all -r requirements.txt && \
-    pip wheel --no-cache-dir --wheel-dir /wheels --only-binary=all -r requirements.txt)
+# Upgrade packaging tools first, then build a deterministic wheelhouse.
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
 
 # 运行阶段：使用最小化镜像
 FROM python:3.14-alpine
@@ -48,7 +43,6 @@ ENV TZ=Asia/Shanghai
 
 # 安装运行时依赖（最小化）
 RUN apk add --no-cache \
-    curl \
     ca-certificates \
     tzdata \
     && rm -rf /var/cache/apk/* \
@@ -66,8 +60,6 @@ RUN pip install --no-cache-dir /wheels/* && rm -rf /wheels
 
 # 复制应用代码
 COPY src/ ./src/
-COPY start.sh .
-RUN chmod +x start.sh
 
 # 使用非root用户运行（安全考虑）
 RUN addgroup -g 1000 appuser && \
@@ -76,10 +68,7 @@ RUN addgroup -g 1000 appuser && \
     chown -R appuser:appuser /app
 USER appuser
 
-# 健康检查（暂时禁用，因为应用可能没有健康检查端点）
-# HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-#     CMD curl -f http://localhost:8080/health || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD ["python", "-m", "src.healthcheck"]
 
-EXPOSE 8080
-
-CMD ["./start.sh"] 
+CMD ["python", "-m", "src.main"]

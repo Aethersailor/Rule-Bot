@@ -9,6 +9,7 @@ from telegram import Bot
 from telegram.error import TelegramError
 
 from ..config import Config
+from ..utils.cache import TTLCache
 
 
 class GroupService:
@@ -18,6 +19,7 @@ class GroupService:
         self.config = config
         self.bot = bot
         self._group_check_enabled = bool(getattr(config, "GROUP_CHECK_ENABLED", False))
+        self._membership_cache = TTLCache[int, bool](2048, 300)
     
     def is_group_check_enabled(self) -> bool:
         """检查是否启用群组验证"""
@@ -37,6 +39,10 @@ class GroupService:
         """检查用户是否在指定群组中"""
         if not self._group_check_enabled:
             return True  # 功能关闭时默认通过
+
+        cached = self._membership_cache.get(user_id)
+        if cached is not None:
+            return cached
         
         try:
             chat_member = await self.bot.get_chat_member(
@@ -47,6 +53,7 @@ class GroupService:
             # 检查用户状态
             valid_statuses = ['member', 'administrator', 'creator']
             is_member = chat_member.status in valid_statuses
+            self._membership_cache.set(user_id, is_member)
             
             logger.debug(f"用户 {user_id} 群组状态: {chat_member.status}, 是否为成员: {is_member}")
             return is_member
@@ -63,10 +70,10 @@ class GroupService:
         if not self._group_check_enabled:
             return ""
         
-        message = f"🔒 *使用限制*\n\n"
-        message += f"为了使用本机器人，请先加入我们的群组：\n\n"
+        message = "🔒 *使用限制*\n\n"
+        message += "为了使用本机器人，请先加入我们的群组：\n\n"
         message += f"📢 *群组名称：* {self._escape_markdown(self.config.REQUIRED_GROUP_NAME)}\n"
         message += f"🔗 *加入链接：* {self._escape_markdown(self.config.REQUIRED_GROUP_LINK)}\n\n"
-        message += f"加入后请重新尝试使用机器人功能。"
+        message += "加入后请重新尝试使用机器人功能。"
         
         return message 

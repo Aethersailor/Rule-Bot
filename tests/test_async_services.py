@@ -2,7 +2,6 @@ import unittest
 from unittest.mock import MagicMock, patch
 import sys
 import os
-import asyncio
 import base64
 
 # Add repo root to path
@@ -127,6 +126,28 @@ class TestServices(unittest.IsolatedAsyncioTestCase):
         updated_content = service.repo.update_file.call_args.args[2]
         self.assertIn("# 以下域名待提交 PR", updated_content)
         self.assertIn("DOMAIN-SUFFIX,other.com", updated_content)
+
+    async def test_github_service_rejects_multiline_description(self):
+        config = MagicMock(spec=Config)
+        config.GITHUB_TOKEN = "token"
+        config.DIRECT_RULE_FILE = "rule.list"
+        config.GITHUB_REPO = "test/repo"
+        config.GITHUB_COMMIT_NAME = "bot"
+        config.GITHUB_COMMIT_EMAIL = "bot@test.com"
+        config.GITHUB_BRANCH = "master"
+
+        with patch.object(GitHubService, "_initialize_repo"):
+            service = GitHubService(config)
+        service.repo = MagicMock()
+
+        result = await service.add_domain_to_rules(
+            "example.com",
+            "user",
+            "x\nDOMAIN-SUFFIX,ai\nx",
+        )
+
+        self.assertFalse(result["success"])
+        service.repo.update_file.assert_not_called()
 
 if __name__ == '__main__':
     unittest.main()

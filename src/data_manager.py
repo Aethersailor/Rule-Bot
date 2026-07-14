@@ -582,8 +582,8 @@ class DataManager:
                 try:
                     tmp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
                     tmp_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                except OSError as cleanup_error:
+                    logger.debug("清理临时下载文件失败 {}: {}", tmp_path, cleanup_error)
                 last_error = str(e)
                 logger.warning("{} 数据下载失败: {} ({})", label, url, e)
 

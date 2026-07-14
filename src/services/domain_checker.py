@@ -221,12 +221,8 @@ class DomainChecker:
     
     def should_ask_confirmation(self, check_result: Dict[str, Any]) -> bool:
         """判断是否需要用户确认"""
-        try:
-            # 根据新逻辑，不需要确认的情况，都是直接添加或直接拒绝
-            return False
-            
-        except Exception:
-            return False
+        # 根据新逻辑，不需要确认的情况，都是直接添加或直接拒绝。
+        return False
     
     def should_reject(self, check_result: Dict[str, Any]) -> bool:
         """判断是否应该拒绝添加"""

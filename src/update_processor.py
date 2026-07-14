@@ -56,7 +56,7 @@ class PerUserUpdateProcessor(BaseUpdateProcessor):
             async with lock:
                 async with self._work_semaphore:
                     started = True
-                    await coroutine
+                    _ = await coroutine
         finally:
             if not started:
                 close = getattr(coroutine, "close", None)

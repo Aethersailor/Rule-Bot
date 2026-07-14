@@ -6,6 +6,7 @@ GeoIP 服务模块
 import socket
 import ipaddress
 from bisect import bisect_right
+from contextlib import suppress
 from pathlib import Path
 from typing import Optional, Dict, Any
 from loguru import logger
@@ -197,8 +198,8 @@ class GeoIPService:
             if new_reader and new_reader is not self.reader:
                 try:
                     new_reader.close()
-                except Exception:
-                    pass
+                except Exception as close_error:
+                    logger.debug("关闭未采用的 GeoIP reader 失败: {}", close_error)
             logger.error("GeoIP/CIDR 热重载失败，继续使用旧数据: {}", e)
             return False
 
@@ -238,8 +239,8 @@ class GeoIPService:
                     if self._location_cache:
                         self._location_cache.set(ip, result)
                     return result
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("查询 GeoIP 国家名称失败，使用回退映射: {}", e)
             
             # 回退到简单映射
             country_names = {
@@ -279,8 +280,6 @@ class GeoIPService:
     
     def __del__(self):
         """关闭数据库连接"""
-        try:
+        with suppress(Exception):
             self.close()
-        except Exception:
-            pass
  

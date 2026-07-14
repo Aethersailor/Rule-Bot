@@ -53,7 +53,7 @@ class RuleBot:
             try:
                 await self._heartbeat_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("心跳任务已取消")
             self._heartbeat_task = None
         if self.app:
             try:
@@ -75,8 +75,8 @@ class RuleBot:
             await self.data_manager.close()
         try:
             Path(HEALTH_PATH).unlink(missing_ok=True)
-        except OSError:
-            pass
+        except OSError as e:
+            logger.warning("删除健康检查文件失败: {}", e)
         logger.info("机器人已停止")
 
     async def start(self, stop_event: Optional[asyncio.Event] = None):

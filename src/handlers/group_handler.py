@@ -152,8 +152,8 @@ class GroupHandler:
             logger.error(f"处理群组消息失败: {e}")
             try:
                 await update.effective_message.reply_text("❌ 处理失败，请稍后重试。")
-            except Exception:
-                pass
+            except Exception as reply_error:
+                logger.debug("发送群组错误提示失败: {}", reply_error)
     
     async def _extract_domain_from_message(self, message: Message) -> Optional[str]:
         """从消息中提取域名（支持回复消息）

@@ -78,6 +78,14 @@ class Config:
         # 支持逗号分隔的多个群组 ID，例如：-1001234567890,-1009876543210
         self.ALLOWED_GROUP_IDS = self._parse_group_ids(os.getenv("ALLOWED_GROUP_IDS", ""))
 
+        # 私聊成功提交后的群组播报（独立配置，避免改变现有群组行为）
+        announcement_group_id_raw = os.getenv("ANNOUNCEMENT_GROUP_ID", "").strip()
+        self.ANNOUNCEMENT_GROUP_ID = self._parse_required_group_id(
+            announcement_group_id_raw
+        )
+        if announcement_group_id_raw and not self.ANNOUNCEMENT_GROUP_ID:
+            logger.warning(f"无效的 ANNOUNCEMENT_GROUP_ID: {announcement_group_id_raw}")
+
         # 管理员配置（Telegram 用户 ID 列表）
         # 支持逗号分隔的多个用户 ID，例如：123456789,987654321
         self.ADMIN_USER_IDS = self._parse_user_ids(os.getenv("ADMIN_USER_IDS", ""))

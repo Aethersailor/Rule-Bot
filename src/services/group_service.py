@@ -1,8 +1,9 @@
 """
-群组验证服务
-检查用户是否加入指定群组
+群组服务
+检查用户是否加入指定群组，并提供隐私安全的规则提交播报
 """
 
+import asyncio
 from typing import Optional
 from loguru import logger
 from telegram import Bot
@@ -19,6 +20,7 @@ class GroupService:
         self.config = config
         self.bot = bot
         self._group_check_enabled = bool(getattr(config, "GROUP_CHECK_ENABLED", False))
+        self._announcement_group_id = getattr(config, "ANNOUNCEMENT_GROUP_ID", None)
         self._membership_cache = TTLCache[int, bool](2048, 300)
     
     def is_group_check_enabled(self) -> bool:
@@ -77,3 +79,63 @@ class GroupService:
         message += "加入后请重新尝试使用机器人功能。"
         
         return message 
+
+    async def announce_rule_submission(
+        self,
+        domain: str,
+        commit_sha: str = "",
+        commit_url: str = "",
+    ) -> bool:
+        """Best-effort broadcast that never changes the core add result."""
+        if not self._announcement_group_id:
+            return False
+
+        short_sha = (commit_sha or "")[:8]
+        message = (
+            "📣 *直连规则更新*\n\n"
+            "✅ *结果：* 已成功提交\n"
+            "🧭 *类型：* `DOMAIN-SUFFIX`\n"
+            f"🌐 *域名：* `{domain}`"
+        )
+        if commit_url and short_sha:
+            message += f"\n🔗 *提交：* [查看 {short_sha}]({commit_url})"
+
+        try:
+            await asyncio.wait_for(
+                self.bot.send_message(
+                    chat_id=self._announcement_group_id,
+                    text=message,
+                    parse_mode="Markdown",
+                    disable_notification=True,
+                    disable_web_page_preview=True,
+                ),
+                timeout=8,
+            )
+            logger.info(
+                "群组播报已发送: group={}, domain={}, commit={}",
+                self._announcement_group_id,
+                domain,
+                short_sha or "unknown",
+            )
+            return True
+        except asyncio.TimeoutError:
+            logger.warning(
+                "群组播报超时，不影响规则提交: group={}, domain={}",
+                self._announcement_group_id,
+                domain,
+            )
+        except TelegramError as e:
+            logger.warning(
+                "群组播报失败，不影响规则提交: group={}, domain={}, error={}",
+                self._announcement_group_id,
+                domain,
+                e,
+            )
+        except Exception as e:
+            logger.warning(
+                "群组播报异常，不影响规则提交: group={}, domain={}, error={}",
+                self._announcement_group_id,
+                domain,
+                e,
+            )
+        return False

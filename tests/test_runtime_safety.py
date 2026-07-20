@@ -4,7 +4,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from src import healthcheck
 from src.handlers.group_handler import GroupHandler
@@ -68,6 +68,26 @@ class TestRuntimeSafety(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(manager.user_states), 4)
         self.assertIn(9, manager.user_states)
+
+    async def test_announcement_only_runs_for_private_success(self):
+        manager = HandlerManager.__new__(HandlerManager)
+        manager.group_service = SimpleNamespace(
+            announce_rule_submission=AsyncMock(return_value=True)
+        )
+        result = {"success": True, "commit_sha": "abc", "commit_url": "https://example.test"}
+
+        private_result = await manager._announce_private_addition(
+            SimpleNamespace(type="private"), "example.com", result
+        )
+        group_result = await manager._announce_private_addition(
+            SimpleNamespace(type="supergroup"), "other.com", result
+        )
+
+        self.assertTrue(private_result)
+        self.assertFalse(group_result)
+        manager.group_service.announce_rule_submission.assert_awaited_once_with(
+            "example.com", "abc", "https://example.test"
+        )
 
     async def test_group_mention_uses_utf16_aware_parser(self):
         handler = GroupHandler.__new__(GroupHandler)

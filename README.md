@@ -4,7 +4,7 @@
 
 - ✅ 自动检查 GitHub 规则与 GEOSITE:CN
 - ✅ DNS / NS 归属地判断，给出添加建议
-- ✅ 群组验证与群组 @ 提及模式
+- ✅ 群组验证、群组 @ 提及与私聊成功播报
 - ✅ Docker 部署，支持 `linux/amd64` 与 `linux/arm64`
 
 > 不提供 Windows 支持，仅建议 Docker 部署。
@@ -52,7 +52,7 @@ skip - 跳过说明
 
 > Token 只显示一次，请妥善保存。
 
-### 获取群组 ID（群组模式 / 群组验证需要）
+### 获取群组 ID（群组模式 / 群组验证 / 群组播报需要）
 
 把 @userinfobot 加入群组，它会返回完整群组 ID（通常以 `-100` 开头）。  
 
@@ -121,6 +121,7 @@ docker compose logs -f rule-bot
 | `REQUIRED_GROUP_NAME` | 群组验证名称 | 空 |
 | `REQUIRED_GROUP_LINK` | 群组验证链接 | 空 |
 | `ALLOWED_GROUP_IDS` | 群组模式允许的群组 ID，逗号分隔 | 空 |
+| `ANNOUNCEMENT_GROUP_ID` | 私聊成功提交后的群组播报目标 ID | 空 |
 | `ADMIN_USER_IDS` | 管理员 Telegram 用户 ID，逗号分隔 | 空 |
 | `TZ` | 时区 | `Asia/Shanghai` |
 | `DNS_CACHE_TTL` | DNS A 记录缓存秒数 | `60` |
@@ -172,6 +173,10 @@ docker compose logs -f rule-bot
 ### 群组验证（REQUIRED_GROUP_*）
 
 同时配置 `REQUIRED_GROUP_ID/NAME/LINK` 后生效，未通过或校验失败会拒绝访问（失败即拒绝）。
+
+### 群组播报（ANNOUNCEMENT_GROUP_ID）
+
+配置后，仅在用户通过私聊成功写入新直连规则时发送一条静默群消息。播报只包含提交结果、规则类型、域名与提交链接，不包含用户名、用户 ID、说明或私聊内容。Bot 未入群、无发言权限、请求超时或发送失败都不会改变私聊添加结果；群内直接添加不会触发重复播报。
 
 ### 管理员模式（ADMIN_USER_IDS）
 

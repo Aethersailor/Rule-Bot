@@ -93,6 +93,24 @@ class HandlerManager:
         if changes.get("geoip") or changes.get("cn_ipv4"):
             self.geoip_service.reload()
 
+    async def _announce_private_addition(self, chat, domain: str, add_result: dict) -> bool:
+        """Broadcast only successful additions that originated in private chat."""
+        if (
+            not self.group_service
+            or not add_result.get("success")
+            or getattr(chat, "type", None) != "private"
+        ):
+            return False
+        try:
+            return await self.group_service.announce_rule_submission(
+                domain,
+                add_result.get("commit_sha", ""),
+                add_result.get("commit_url", ""),
+            )
+        except Exception as e:
+            logger.warning("群组播报调用异常，不影响私聊添加结果: {}", e)
+            return False
+
     async def check_and_add_domain_auto(
         self, 
         domain: str, 
@@ -1359,6 +1377,12 @@ class HandlerManager:
             reply_markup = InlineKeyboardMarkup(keyboard)
 
             await query.edit_message_text(result_text, reply_markup=reply_markup, parse_mode='Markdown')
+            if add_result.get("success"):
+                await self._announce_private_addition(
+                    getattr(query.message, "chat", None),
+                    target_domain,
+                    add_result,
+                )
             self.set_user_state(user_id, "waiting_add_domain")
 
         except Exception as e:
@@ -1522,6 +1546,12 @@ class HandlerManager:
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             await query.edit_message_text(result_text, reply_markup=reply_markup, parse_mode='Markdown')
+            if add_result.get("success"):
+                await self._announce_private_addition(
+                    getattr(query.message, "chat", None),
+                    target_domain,
+                    add_result,
+                )
             
             # 保持添加模式，便于继续输入域名
             self.set_user_state(user_id, "waiting_add_domain")
@@ -1587,6 +1617,12 @@ class HandlerManager:
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             await processing_msg.edit_text(result_text, reply_markup=reply_markup, parse_mode='Markdown')
+            if add_result.get("success"):
+                await self._announce_private_addition(
+                    getattr(message, "chat", None),
+                    target_domain,
+                    add_result,
+                )
             
             # 保持添加模式，便于继续输入域名
             self.set_user_state(user_id, "waiting_add_domain")

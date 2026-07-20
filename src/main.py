@@ -195,7 +195,7 @@ async def _run():
         await bot.start(stop_event)
     finally:
         stop_event.set()
-        await monitor_task
+        _ = await monitor_task
 
 def main():
     """主程序入口"""

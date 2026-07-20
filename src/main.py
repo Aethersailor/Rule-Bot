@@ -140,6 +140,20 @@ def log_memory_usage():
     except Exception as e:
         logger.warning(f"获取内存使用情况失败: {e}")
 
+
+async def _memory_monitor(stop_event: asyncio.Event, interval: float = 600) -> None:
+    """Periodically sample memory without keeping an unmanaged OS thread."""
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            log_memory_usage()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"内存监控出错: {e}")
+            await asyncio.sleep(min(60, interval))
+
 async def _run():
     """异步主流程（全进程单事件循环）"""
     # 初始化配置
@@ -175,22 +189,13 @@ async def _run():
     # 启动机器人
     logger.info("启动 Telegram 机器人...")
     
-    # 启动定期内存检查（每 10 分钟检查一次）
-    import threading
-
-    def memory_monitor():
-        while True:
-            try:
-                time.sleep(600)  # 10 分钟
-                log_memory_usage()
-            except Exception as e:
-                logger.warning(f"内存监控出错: {e}")
-                time.sleep(60)  # 出错后等待 1 分钟再继续
-
-    monitor_thread = threading.Thread(target=memory_monitor, daemon=True)
-    monitor_thread.start()
-
-    await bot.start(stop_event)
+    # 启动定期内存检查（每 10 分钟检查一次），并与主停止事件绑定。
+    monitor_task = asyncio.create_task(_memory_monitor(stop_event))
+    try:
+        await bot.start(stop_event)
+    finally:
+        stop_event.set()
+        await monitor_task
 
 def main():
     """主程序入口"""

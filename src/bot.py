@@ -40,6 +40,11 @@ class RuleBot:
 
     async def _error_handler(self, update, context):
         logger.error("Telegram 更新处理异常: {}", context.error)
+
+    @staticmethod
+    def _polling_error_handler(error):
+        """Keep expected polling outages concise while PTB retries them."""
+        logger.warning("Telegram polling 暂时失败，将自动重试: {}: {}", type(error).__name__, error)
     
     async def stop(self):
         """停止机器人"""
@@ -107,8 +112,11 @@ class RuleBot:
                 await self.app.start()
                 self._metrics_task = EXPORTER.start()
                 await self.app.updater.start_polling(
+                    timeout=30,
+                    bootstrap_retries=5,
                     allowed_updates=["message", "callback_query"],
                     drop_pending_updates=False,
+                    error_callback=self._polling_error_handler,
                 )
                 self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
                 try:

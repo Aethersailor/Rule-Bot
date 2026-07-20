@@ -12,7 +12,12 @@ from telegram.ext import BaseUpdateProcessor
 class PerUserUpdateProcessor(BaseUpdateProcessor):
     """Process different users concurrently while preserving each user's order."""
 
-    def __init__(self, max_concurrent_updates: int = 8, lock_ttl: int = 3600):
+    def __init__(
+        self,
+        max_concurrent_updates: int = 8,
+        lock_ttl: int = 3600,
+        max_key_locks: int = 4096,
+    ):
         # BaseUpdateProcessor acquires its semaphore before per-key logic. Keep
         # that outer queue roomy so a burst from one user cannot occupy every
         # slot while waiting on the same lock; the inner semaphore is the real
@@ -22,6 +27,7 @@ class PerUserUpdateProcessor(BaseUpdateProcessor):
         self._locks: dict[tuple[str, int], asyncio.Lock] = {}
         self._last_used: dict[tuple[str, int], float] = {}
         self._lock_ttl = max(60, lock_ttl)
+        self._max_key_locks = max(64, max_key_locks)
         self._last_cleanup = 0.0
 
     @staticmethod
@@ -35,14 +41,31 @@ class PerUserUpdateProcessor(BaseUpdateProcessor):
         return ("update", id(update))
 
     def _cleanup(self, now: float) -> None:
-        if now - self._last_cleanup < 600:
+        under_pressure = len(self._locks) >= self._max_key_locks
+        if not under_pressure and now - self._last_cleanup < 600:
             return
         cutoff = now - self._lock_ttl
         for key, used_at in list(self._last_used.items()):
             lock = self._locks.get(key)
-            if used_at < cutoff and lock is not None and not lock.locked():
+            waiters = getattr(lock, "_waiters", None) if lock is not None else None
+            if (
+                used_at < cutoff
+                and lock is not None
+                and not lock.locked()
+                and not waiters
+            ):
                 self._last_used.pop(key, None)
                 self._locks.pop(key, None)
+
+        if len(self._locks) >= self._max_key_locks:
+            for key in sorted(self._last_used, key=self._last_used.get):
+                lock = self._locks.get(key)
+                waiters = getattr(lock, "_waiters", None) if lock is not None else None
+                if lock is not None and not lock.locked() and not waiters:
+                    self._last_used.pop(key, None)
+                    self._locks.pop(key, None)
+                if len(self._locks) < self._max_key_locks:
+                    break
         self._last_cleanup = now
 
     async def do_process_update(self, update: object, coroutine: Awaitable[Any]) -> None:

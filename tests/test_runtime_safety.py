@@ -40,6 +40,35 @@ class TestRuntimeSafety(unittest.IsolatedAsyncioTestCase):
         self.assertLess(events.index("other-user"), events.index("first-end"))
         self.assertLess(events.index("first-end"), events.index("second"))
 
+    async def test_update_processor_bounds_idle_key_locks(self):
+        processor = PerUserUpdateProcessor(2, max_key_locks=64)
+
+        async with processor:
+            for user_id in range(200):
+                update = SimpleNamespace(effective_user=SimpleNamespace(id=user_id))
+
+                async def complete():
+                    return None
+
+                await processor.process_update(update, complete())
+
+            self.assertLessEqual(len(processor._locks), 64)
+
+    async def test_handler_manager_bounds_user_states(self):
+        manager = HandlerManager.__new__(HandlerManager)
+        manager.user_states = {}
+        manager._pending_actions = {}
+        manager._last_state_cleanup = time.monotonic()
+        manager.STATE_TTL = 1800
+        manager.ACTION_TTL = 900
+        manager.MAX_USER_STATES = 4
+
+        for user_id in range(10):
+            manager.get_user_state(user_id)
+
+        self.assertEqual(len(manager.user_states), 4)
+        self.assertIn(9, manager.user_states)
+
     async def test_group_mention_uses_utf16_aware_parser(self):
         handler = GroupHandler.__new__(GroupHandler)
         entity = SimpleNamespace(type="mention")

@@ -66,6 +66,7 @@ class HandlerManager:
         self.MAX_DETAIL_LINE_LENGTH = 120
         self.STATE_TTL = 1800
         self.ACTION_TTL = 900
+        self.MAX_USER_STATES = 4096
 
         self.data_manager.register_update_callback(self._handle_data_update)
         
@@ -202,6 +203,7 @@ class HandlerManager:
             self.user_states.pop(user_id, None)
             state = None
         if state is None:
+            self._ensure_user_state_capacity()
             self.user_states[user_id] = {
                 "state": "idle",
                 "data": {},
@@ -212,10 +214,29 @@ class HandlerManager:
     def set_user_state(self, user_id: int, state: str, data: Dict[str, Any] = None):
         """设置用户状态"""
         if user_id not in self.user_states:
+            self._ensure_user_state_capacity()
             self.user_states[user_id] = {}
         self.user_states[user_id]["state"] = state
         self.user_states[user_id]["data"] = data or {}
         self.user_states[user_id]["updated_at"] = time.monotonic()
+
+    def _ensure_user_state_capacity(self) -> None:
+        if len(self.user_states) < self.MAX_USER_STATES:
+            return
+
+        # Prefer discarding the oldest idle conversation. Active states are
+        # only evicted as a last-resort bound during an extreme user burst.
+        idle_states = {
+            uid: state
+            for uid, state in self.user_states.items()
+            if state.get("state") == "idle"
+        }
+        candidates = idle_states or self.user_states
+        oldest_uid = min(
+            candidates,
+            key=lambda uid: candidates[uid].get("updated_at", 0),
+        )
+        self.user_states.pop(oldest_uid, None)
 
     def _cleanup_transient_state(self) -> None:
         now = time.monotonic()

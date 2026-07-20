@@ -73,7 +73,7 @@ class GeoIPService:
             # 验证 IP 格式
             socket.inet_aton(ip)
 
-            if self._location_cache:
+            if self._location_cache is not None:
                 cached = self._location_cache.get(ip)
                 if cached is not None:
                     return cached.get("country_code")
@@ -188,7 +188,7 @@ class GeoIPService:
             self.reader = new_reader
             self._cn_ipv4_ranges = ranges
             self._cn_ipv4_range_starts = starts
-            if self._location_cache:
+            if self._location_cache is not None:
                 self._location_cache.clear()
             if old_reader:
                 old_reader.close()
@@ -218,29 +218,40 @@ class GeoIPService:
     def get_location_info(self, ip: str) -> Dict[str, Any]:
         """获取 IP 的详细位置信息"""
         try:
-            if self._location_cache:
+            socket.inet_aton(ip)
+
+            if self._location_cache is not None:
                 cached = self._location_cache.get(ip)
                 if cached is not None:
                     return cached
-            country_code = self.get_country_code(ip)
-            
-            # 如果使用真实数据库且找到结果
-            if self.reader and country_code:
+
+            country_code = None
+            country_name = None
+
+            # Read the MMDB once per uncached IP. The old path first called
+            # get_country_code() and then repeated reader.country() for the
+            # display name.
+            if self.reader:
                 try:
                     response = self.reader.country(ip)
-                    country_name = response.country.names.get('zh-CN') or response.country.name or "未知"
-                    
-                    result = {
-                        "ip": ip,
-                        "country_code": country_code,
-                        "country_name": country_name,
-                        "is_china": country_code == "CN"
-                    }
-                    if self._location_cache:
-                        self._location_cache.set(ip, result)
-                    return result
+                    country_code = response.country.iso_code
+                    if not country_code:
+                        country_code = (
+                            response.registered_country.iso_code
+                            or response.represented_country.iso_code
+                        )
+                    country_name = (
+                        response.country.names.get('zh-CN')
+                        or response.country.name
+                        or None
+                    )
+                except geoip2.errors.AddressNotFoundError:
+                    logger.debug(f"IP {ip} 未在 GeoIP 数据库中找到")
                 except Exception as e:
                     logger.debug("查询 GeoIP 国家名称失败，使用回退映射: {}", e)
+
+            if not country_code:
+                country_code = self._fallback_china_check(ip)
             
             # 回退到简单映射
             country_names = {
@@ -259,10 +270,10 @@ class GeoIPService:
             result = {
                 "ip": ip,
                 "country_code": country_code,
-                "country_name": country_names.get(country_code, "未知" if country_code else "未知"),
+                "country_name": country_name or country_names.get(country_code, "未知"),
                 "is_china": country_code == "CN" if country_code else False
             }
-            if self._location_cache:
+            if self._location_cache is not None:
                 self._location_cache.set(ip, result)
             return result
             
@@ -274,7 +285,7 @@ class GeoIPService:
                 "country_name": "未知",
                 "is_china": False
             }
-            if self._location_cache:
+            if self._location_cache is not None:
                 self._location_cache.set(ip, result)
             return result
     

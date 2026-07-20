@@ -25,6 +25,22 @@ class TestTTLCache(unittest.TestCase):
         time.sleep(0.05)
         self.assertIsNone(cache.get("a"))
 
+    def test_ttl_cache_keeps_hard_bound_under_many_writes(self):
+        cache = TTLCache(maxsize=64, ttl_seconds=60)
+        for value in range(10_000):
+            cache.set(value, value)
+
+        self.assertEqual(len(cache), 64)
+        self.assertIsNone(cache.get(0))
+        self.assertEqual(cache.get(9_999), 9_999)
+
+    def test_non_positive_ttl_does_not_retain_values(self):
+        cache = TTLCache(maxsize=2, ttl_seconds=0)
+        cache.set("a", 1)
+
+        self.assertEqual(len(cache), 0)
+        self.assertIsNone(cache.get("a"))
+
 
 class TestMetricsStore(unittest.TestCase):
     def test_metrics_snapshot(self):

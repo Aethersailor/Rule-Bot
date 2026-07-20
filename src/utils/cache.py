@@ -17,6 +17,7 @@ class TTLCache(Generic[K, V]):
         self.maxsize = max(0, int(maxsize))
         self.ttl_seconds = float(ttl_seconds)
         self._data: OrderedDict[K, tuple[float, V]] = OrderedDict()
+        self._next_cleanup = 0.0
 
     def get(self, key: K) -> Optional[V]:
         if self.maxsize <= 0:
@@ -33,10 +34,10 @@ class TTLCache(Generic[K, V]):
         return value
 
     def set(self, key: K, value: V) -> None:
-        if self.maxsize <= 0:
+        if self.maxsize <= 0 or self.ttl_seconds <= 0:
             return
         now = monotonic()
-        expires_at = now + self.ttl_seconds if self.ttl_seconds > 0 else now
+        expires_at = now + self.ttl_seconds
         self._data[key] = (expires_at, value)
         self._data.move_to_end(key)
         self._evict(now)
@@ -46,14 +47,20 @@ class TTLCache(Generic[K, V]):
 
     def clear(self) -> None:
         self._data.clear()
+        self._next_cleanup = 0.0
 
     def __len__(self) -> int:
         return len(self._data)
 
     def _evict(self, now: float) -> None:
-        if self.ttl_seconds > 0 and self._data:
-            expired_keys = [k for k, (exp, _) in list(self._data.items()) if exp <= now]
+        # Expiration is also enforced lazily by get(). A full expiration sweep
+        # on every write makes a hot cache O(maxsize) per insertion, so sweep at
+        # a bounded interval and keep the hard LRU size limit O(1).
+        if self._data and now >= self._next_cleanup:
+            expired_keys = [k for k, (exp, _) in self._data.items() if exp <= now]
             for key in expired_keys:
                 self._data.pop(key, None)
+            cleanup_interval = max(1.0, min(60.0, self.ttl_seconds / 2.0))
+            self._next_cleanup = now + cleanup_interval
         while len(self._data) > self.maxsize:
             self._data.popitem(last=False)

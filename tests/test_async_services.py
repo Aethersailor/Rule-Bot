@@ -127,6 +127,42 @@ class TestServices(unittest.IsolatedAsyncioTestCase):
         self.assertIn("# 以下域名待提交 PR", updated_content)
         self.assertIn("DOMAIN-SUFFIX,other.com", updated_content)
 
+    async def test_github_rule_analysis_is_reused_by_queries_and_stats(self):
+        config = MagicMock(spec=Config)
+        config.GITHUB_TOKEN = "token"
+        config.DIRECT_RULE_FILE = "rule.list"
+        config.GITHUB_REPO = "test/repo"
+        config.GITHUB_BRANCH = "master"
+        config.GITHUB_FILE_CACHE_SIZE = 4
+        config.GITHUB_FILE_CACHE_TTL = 60
+
+        with patch.object(GitHubService, "_initialize_repo"):
+            service = GitHubService(config)
+        service.repo = MagicMock()
+
+        content = (
+            "# rules\n"
+            "DOMAIN-SUFFIX,example.com\n"
+            "DOMAIN-SUFFIX,other.com\n"
+        )
+        mock_file = MagicMock()
+        mock_file.content = base64.b64encode(content.encode()).decode()
+        mock_file.sha = "same_sha"
+        service.repo.get_contents.return_value = mock_file
+
+        first = await service.check_domain_in_rules("sub.example.com")
+        second = await service.check_domain_in_rules("example.com")
+        stats = await service.get_file_stats()
+
+        self.assertTrue(first["exists"])
+        self.assertEqual(first["matches"][0]["type"], "suffix_match")
+        self.assertTrue(second["exists"])
+        self.assertEqual(second["matches"][0]["type"], "exact_match")
+        self.assertEqual(stats["rule_count"], 2)
+        self.assertEqual(stats["comment_count"], 1)
+        self.assertEqual(service.repo.get_contents.call_count, 1)
+        self.assertEqual(len(service._analysis_cache), 1)
+
     async def test_github_service_rejects_multiline_description(self):
         config = MagicMock(spec=Config)
         config.GITHUB_TOKEN = "token"

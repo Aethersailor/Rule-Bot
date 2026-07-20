@@ -58,7 +58,25 @@ class DomainChecker:
                     self.dns_service.query_a_record(second_level)
                 )
 
-            domain_ips = await domain_ip_task
+            ns_domain = second_level if second_level else normalized_domain
+            logger.info(f"查询域名 {ns_domain} 的 NS 记录...")
+            ns_task = asyncio.create_task(
+                self.dns_service.query_ns_records(ns_domain)
+            )
+
+            if second_level_ip_task:
+                domain_ips, second_level_ips, ns_servers = await asyncio.gather(
+                    domain_ip_task,
+                    second_level_ip_task,
+                    ns_task,
+                )
+            else:
+                domain_ips, ns_servers = await asyncio.gather(
+                    domain_ip_task,
+                    ns_task,
+                )
+                second_level_ips = []
+
             result["domain_ips"] = domain_ips
             
             # 检查域名 IP 归属地
@@ -78,7 +96,6 @@ class DomainChecker:
             
             # 2. 如果不是二级域名，查询二级域名 IP
             if second_level and second_level != normalized_domain:
-                second_level_ips = await second_level_ip_task
                 result["second_level_ips"] = second_level_ips
                 
                 if second_level_ips:
@@ -95,10 +112,7 @@ class DomainChecker:
                 else:
                     result["details"].append("无法解析二级域名 IP")
             
-            # 3. 查询 NS 服务器
-            ns_domain = second_level if second_level else normalized_domain
-            logger.info(f"查询域名 {ns_domain} 的 NS 记录...")
-            ns_servers = await self.dns_service.query_ns_records(ns_domain)
+            # 3. 处理并发查询得到的 NS 服务器
             result["ns_servers"] = ns_servers
             
             # 检查 NS 服务器 IP 归属地

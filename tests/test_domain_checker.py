@@ -102,6 +102,16 @@ class DummyDNSServiceUnavailable:
         return []
 
 
+class DummyDNSServiceConcurrentPrimary:
+    async def query_a_record(self, domain: str, use_edns_china: bool = True):
+        await asyncio.sleep(0.05)
+        return ["1.1.1.1"]
+
+    async def query_ns_records(self, domain: str):
+        await asyncio.sleep(0.05)
+        return []
+
+
 class TestDomainChecker(unittest.IsolatedAsyncioTestCase):
     async def test_check_domain_comprehensive_china_ip(self):
         checker = DomainChecker(DummyDNSService(), DummyGeoIPService())
@@ -140,6 +150,16 @@ class TestDomainChecker(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["lookup_status"], "unknown")
         self.assertIn("error", result)
         self.assertFalse(checker.should_reject(result))
+
+    async def test_primary_a_and_ns_queries_run_concurrently(self):
+        checker = DomainChecker(DummyDNSServiceConcurrentPrimary(), DummyGeoIPService())
+
+        start = time.perf_counter()
+        result = await checker.check_domain_comprehensive("example.com")
+        duration = time.perf_counter() - start
+
+        self.assertEqual(result["lookup_status"], "ok")
+        self.assertLess(duration, 0.09)
 
 
 if __name__ == '__main__':

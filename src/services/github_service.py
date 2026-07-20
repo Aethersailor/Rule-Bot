@@ -31,6 +31,10 @@ class GitHubService:
             getattr(config, "GITHUB_FILE_CACHE_SIZE", 0),
             getattr(config, "GITHUB_FILE_CACHE_TTL", 0)
         )
+        self._analysis_cache = TTLCache(
+            getattr(config, "GITHUB_FILE_CACHE_SIZE", 0),
+            getattr(config, "GITHUB_FILE_CACHE_TTL", 0)
+        )
         self._initialize_repo()
 
     def close(self) -> None:
@@ -63,6 +67,57 @@ class GitHubService:
         if branch:
             return f"{branch}:{file_path}"
         return file_path
+
+    @staticmethod
+    def _analyze_rule_content(content: str) -> Dict[str, Any]:
+        """Parse a rule file once for duplicate checks and statistics."""
+        rule_index: Dict[str, list] = {}
+        rule_count = 0
+        comment_count = 0
+        total_lines = 0
+
+        for line_num, raw_line in enumerate(io.StringIO(content), 1):
+            total_lines += 1
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith('#'):
+                comment_count += 1
+                continue
+            if not line.startswith('DOMAIN-SUFFIX,'):
+                continue
+
+            rule_count += 1
+            rule_domain = line[14:].strip().lower()
+            if rule_domain:
+                rule_index.setdefault(rule_domain, []).append({
+                    "line": line_num,
+                    "rule": line,
+                })
+
+        return {
+            "rule_index": rule_index,
+            "rule_count": rule_count,
+            "comment_count": comment_count,
+            "total_lines": total_lines,
+        }
+
+    async def _get_rule_analysis(
+        self,
+        file_path: str,
+        content: str,
+        sha: Optional[str],
+    ) -> Dict[str, Any]:
+        analysis_key = (self._cache_key(file_path), sha or "")
+        cached = self._analysis_cache.get(analysis_key)
+        if cached is not None:
+            METRICS.inc("github.analysis_cache.hit")
+            return cached
+
+        METRICS.inc("github.analysis_cache.miss")
+        analysis = await asyncio.to_thread(self._analyze_rule_content, content)
+        self._analysis_cache.set(analysis_key, analysis)
+        return analysis
 
     def _get_contents_kwargs(self) -> Dict[str, str]:
         branch = self._target_branch()
@@ -219,37 +274,25 @@ class GitHubService:
             if not file_path:
                 file_path = self.config.DIRECT_RULE_FILE
             
-            content = await self.get_rule_file_content(file_path)
-            if content is None:
+            file_data = await self.get_rule_file_data(file_path)
+            if file_data is None:
                 return {"exists": None, "error": "暂时无法读取 GitHub 规则文件"}
-            
-            # CPU密集型操作也在线程池中执行，避免阻塞事件循环
-            def _process_content():
-                domain_lower = domain.lower()
-                found_rules = []
-                
-                for line_num, line in enumerate(io.StringIO(content), 1):
-                    line = line.strip()
-                    if line and not line.startswith('#'):
-                        # 检查 DOMAIN-SUFFIX 格式
-                        if line.startswith('DOMAIN-SUFFIX,'):
-                            rule_domain = line[14:].strip().lower()
-                            if rule_domain == domain_lower:
-                                found_rules.append({
-                                    "line": line_num,
-                                    "rule": line,
-                                    "type": "exact_match"
-                                })
-                            elif domain_lower.endswith('.' + rule_domain):
-                                found_rules.append({
-                                    "line": line_num,
-                                    "rule": line,
-                                    "type": "suffix_match"
-                                })
-                return found_rules
 
             start_ts = time.perf_counter()
-            found_rules = await asyncio.to_thread(_process_content)
+            analysis = await self._get_rule_analysis(
+                file_path,
+                file_data["content"],
+                file_data.get("sha"),
+            )
+            domain_lower = domain.lower().strip().rstrip('.')
+            parts = domain_lower.split('.')
+            found_rules = []
+            for index in range(len(parts)):
+                candidate = '.'.join(parts[index:])
+                match_type = "exact_match" if index == 0 else "suffix_match"
+                for match in analysis["rule_index"].get(candidate, []):
+                    found_rules.append({**match, "type": match_type})
+            found_rules.sort(key=lambda item: item["line"])
             METRICS.record_request(
                 "github.check_rules",
                 (time.perf_counter() - start_ts) * 1000,
@@ -442,6 +485,7 @@ class GitHubService:
                 
                 logger.info(f"成功添加域名 {domain} 到规则文件，commit: {commit_sha}")
                 self._file_cache.pop(self._cache_key(file_path))
+                self._analysis_cache.clear()
                 
                 return {
                     "success": True,
@@ -590,6 +634,7 @@ class GitHubService:
                 
                 logger.info(f"成功删除域名 {domain} 从规则文件，commit: {commit_sha}")
                 self._file_cache.pop(self._cache_key(file_path))
+                self._analysis_cache.clear()
                 
                 return {
                     "success": True,
@@ -615,28 +660,21 @@ class GitHubService:
             if not file_path:
                 file_path = self.config.DIRECT_RULE_FILE
             
-            content = await self.get_rule_file_content(file_path)
-            if not content:
+            file_data = await self.get_rule_file_data(file_path)
+            if not file_data or not file_data.get("content"):
                 return {"error": "无法获取文件内容"}
-            
-            rule_count = 0
-            comment_count = 0
-            total_lines = 0
-            
-            for line in io.StringIO(content):
-                total_lines += 1
-                line = line.strip()
-                if line:
-                    if line.startswith('#'):
-                        comment_count += 1
-                    elif line.startswith('DOMAIN-SUFFIX,'):
-                        rule_count += 1
+
+            analysis = await self._get_rule_analysis(
+                file_path,
+                file_data["content"],
+                file_data.get("sha"),
+            )
             
             return {
                 "file_path": file_path,
-                "total_lines": total_lines,
-                "rule_count": rule_count,
-                "comment_count": comment_count
+                "total_lines": analysis["total_lines"],
+                "rule_count": analysis["rule_count"],
+                "comment_count": analysis["comment_count"]
             }
             
         except Exception as e:

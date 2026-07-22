@@ -85,6 +85,9 @@ class GroupService:
         domain: str,
         commit_sha: str = "",
         commit_url: str = "",
+        repo_path: str = "",
+        rule_path: str = "",
+        user_name: str = "",
     ) -> bool:
         """Best-effort broadcast that never changes the core add result."""
         if not self._announcement_group_id:
@@ -97,6 +100,12 @@ class GroupService:
             "🧭 *类型：* `DOMAIN-SUFFIX`\n"
             f"🌐 *域名：* `{domain}`"
         )
+        if repo_path:
+            message += f"\n📁 *仓库路径：* `{repo_path}`"
+        if rule_path:
+            message += f"\n📄 *规则路径：* `{rule_path}`"
+        if user_name:
+            message += f"\n👤 *添加人：* {self._escape_markdown(user_name)}"
         if commit_url and short_sha:
             message += f"\n🔗 *提交：* [查看 {short_sha}]({commit_url})"
 

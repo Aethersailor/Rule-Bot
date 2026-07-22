@@ -40,7 +40,7 @@ class TestGroupAnnouncements(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result)
         bot.send_message.assert_not_awaited()
 
-    async def test_announcement_is_concise_and_privacy_safe(self):
+    async def test_announcement_includes_submission_context(self):
         bot = AsyncMock()
         config = SimpleNamespace(
             GROUP_CHECK_ENABLED=False,
@@ -52,6 +52,9 @@ class TestGroupAnnouncements(unittest.IsolatedAsyncioTestCase):
             "example.com",
             "abcdef1234567890",
             "https://github.com/example/repo/commit/abcdef1234567890",
+            "example/repo",
+            "rules/direct.list",
+            "Alice_Name",
         )
 
         self.assertTrue(result)
@@ -61,8 +64,10 @@ class TestGroupAnnouncements(unittest.IsolatedAsyncioTestCase):
         self.assertIn("DOMAIN-SUFFIX", kwargs["text"])
         self.assertIn("example.com", kwargs["text"])
         self.assertIn("abcdef12", kwargs["text"])
-        self.assertNotIn("用户", kwargs["text"])
-        self.assertNotIn("说明", kwargs["text"])
+        self.assertIn("example/repo", kwargs["text"])
+        self.assertIn("rules/direct.list", kwargs["text"])
+        self.assertIn("添加人", kwargs["text"])
+        self.assertIn("Alice\\_Name", kwargs["text"])
         self.assertTrue(kwargs["disable_notification"])
 
     async def test_telegram_failure_is_isolated(self):

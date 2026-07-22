@@ -74,19 +74,25 @@ class TestRuntimeSafety(unittest.IsolatedAsyncioTestCase):
         manager.group_service = SimpleNamespace(
             announce_rule_submission=AsyncMock(return_value=True)
         )
-        result = {"success": True, "commit_sha": "abc", "commit_url": "https://example.test"}
+        manager.config = SimpleNamespace(GITHUB_REPO="example/repo")
+        result = {
+            "success": True,
+            "commit_sha": "abc",
+            "commit_url": "https://example.test",
+            "file_path": "rules/direct.list",
+        }
 
         private_result = await manager._announce_private_addition(
-            SimpleNamespace(type="private"), "example.com", result
+            SimpleNamespace(type="private"), "example.com", result, "Alice"
         )
         group_result = await manager._announce_private_addition(
-            SimpleNamespace(type="supergroup"), "other.com", result
+            SimpleNamespace(type="supergroup"), "other.com", result, "Bob"
         )
 
         self.assertTrue(private_result)
         self.assertFalse(group_result)
         manager.group_service.announce_rule_submission.assert_awaited_once_with(
-            "example.com", "abc", "https://example.test"
+            "example.com", "abc", "https://example.test", "example/repo", "rules/direct.list", "Alice"
         )
 
     async def test_group_mention_uses_utf16_aware_parser(self):

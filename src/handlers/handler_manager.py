@@ -93,7 +93,13 @@ class HandlerManager:
         if changes.get("geoip") or changes.get("cn_ipv4"):
             self.geoip_service.reload()
 
-    async def _announce_private_addition(self, chat, domain: str, add_result: dict) -> bool:
+    async def _announce_private_addition(
+        self,
+        chat,
+        domain: str,
+        add_result: dict,
+        user_name: str,
+    ) -> bool:
         """Broadcast only successful additions that originated in private chat."""
         if (
             not self.group_service
@@ -106,6 +112,9 @@ class HandlerManager:
                 domain,
                 add_result.get("commit_sha", ""),
                 add_result.get("commit_url", ""),
+                getattr(self.config, "GITHUB_REPO", ""),
+                add_result.get("file_path", ""),
+                user_name,
             )
         except Exception as e:
             logger.warning("群组播报调用异常，不影响私聊添加结果: {}", e)
@@ -1382,6 +1391,7 @@ class HandlerManager:
                     getattr(query.message, "chat", None),
                     target_domain,
                     add_result,
+                    username,
                 )
             self.set_user_state(user_id, "waiting_add_domain")
 
@@ -1551,6 +1561,7 @@ class HandlerManager:
                     getattr(query.message, "chat", None),
                     target_domain,
                     add_result,
+                    username,
                 )
             
             # 保持添加模式，便于继续输入域名
@@ -1622,6 +1633,7 @@ class HandlerManager:
                     getattr(message, "chat", None),
                     target_domain,
                     add_result,
+                    username,
                 )
             
             # 保持添加模式，便于继续输入域名

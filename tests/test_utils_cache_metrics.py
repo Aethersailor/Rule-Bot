@@ -6,7 +6,7 @@ import unittest
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 from src.utils.cache import TTLCache
-from src.utils.metrics import MetricsStore
+from src.utils.metrics import Histogram, MetricsStore
 
 
 class TestTTLCache(unittest.TestCase):
@@ -43,6 +43,14 @@ class TestTTLCache(unittest.TestCase):
 
 
 class TestMetricsStore(unittest.TestCase):
+    def test_histogram_exact_boundary_stays_in_inclusive_bucket(self):
+        histogram = Histogram((5, 10))
+
+        histogram.observe(5)
+        histogram.observe(10)
+
+        self.assertEqual(histogram.snapshot().counts, (1, 1, 0))
+
     def test_metrics_snapshot(self):
         metrics = MetricsStore(enabled=True)
         metrics.inc("counter.test")

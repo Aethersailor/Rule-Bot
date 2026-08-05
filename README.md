@@ -143,8 +143,8 @@ docker compose logs -f rule-bot
 | `METRICS_EXPORT_PATH` | metrics 输出路径 | `/tmp/rule-bot-metrics.json` |
 | `METRICS_EXPORT_INTERVAL` | metrics 导出间隔秒数 | `30` |
 | `METRICS_RESET_ON_EXPORT` | 导出后清零 | `false` |
-| `MEMORY_SOFT_LIMIT_MB` | 可选进程软限制 MB | 空（交由容器/宿主机管理） |
-| `MEMORY_HARD_LIMIT_MB` | 可选进程硬限制 MB | 空（交由容器/宿主机管理） |
+| `MEMORY_SOFT_LIMIT_MB` | 高级兼容项：进程地址空间软限制 MB | 空（优先使用容器/宿主机限制） |
+| `MEMORY_HARD_LIMIT_MB` | 高级兼容项：进程地址空间硬限制 MB | 空（优先使用容器/宿主机限制） |
 | `MEMORY_TRIM_ENABLED` | 启用内存修剪 | `true` |
 
 </details>

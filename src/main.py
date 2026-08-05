@@ -99,8 +99,8 @@ def log_memory_usage():
         memory_info = process.memory_info()
         memory_mb = memory_info.rss / 1024 / 1024
         
-        # 边界检查，确保内存值合理
-        if memory_mb < 0 or memory_mb > 1000:  # 如果内存值异常，记录但不处理
+        # RSS 不应为负；较大的正值仍必须参与限额和告警判断。
+        if memory_mb < 0:
             logger.warning(f"内存值异常: {memory_mb:.1f} MB，跳过处理")
             return
         

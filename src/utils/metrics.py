@@ -9,7 +9,7 @@ import json
 import os
 import threading
 import time
-from bisect import bisect_right
+from bisect import bisect_left
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Optional
@@ -53,7 +53,7 @@ class Histogram:
         self.total = 0.0
 
     def observe(self, value_ms: float) -> None:
-        idx = bisect_right(self.buckets, value_ms)
+        idx = bisect_left(self.buckets, value_ms)
         self.counts[idx] += 1
         self.count += 1
         self.total += value_ms

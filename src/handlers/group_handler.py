@@ -217,14 +217,16 @@ class GroupHandler:
                 return
             
             # 调用核心逻辑进行检查和添加
-            result = await self.handler_manager.check_and_add_domain_auto(domain, username)
+            result = await self.handler_manager.check_and_add_domain_auto(
+                domain,
+                username,
+                user_id=user_id,
+            )
             
             # 根据结果回复
             reply_markup = None
             if result["action"] == "added":
-                # 记录用户添加历史
-                self.handler_manager.record_user_add(user_id)
-                _, remaining = self.handler_manager.check_user_add_limit(user_id)
+                remaining = result["rate_limit_remaining"]
                 escaped_username = self.handler_manager.escape_markdown(username)
                 
                 result_text = "✅ *域名添加成功！*\n\n"

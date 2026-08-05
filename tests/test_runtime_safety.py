@@ -1,7 +1,9 @@
 import asyncio
+import ast
 import tempfile
 import time
 import unittest
+from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -13,6 +15,19 @@ from src.update_processor import PerUserUpdateProcessor
 
 
 class TestRuntimeSafety(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _make_rate_limited_manager(max_adds=50, add_result=None):
+        manager = HandlerManager.__new__(HandlerManager)
+        manager.MAX_ADDS_PER_HOUR = max_adds
+        manager.user_add_history = defaultdict(list)
+        manager._last_history_cleanup = 0
+        manager.github_service = SimpleNamespace(
+            add_domain_to_rules=AsyncMock(
+                return_value=add_result or {"success": True}
+            )
+        )
+        return manager
+
     async def test_update_processor_serializes_one_user_only(self):
         processor = PerUserUpdateProcessor(2)
         events = []
@@ -68,6 +83,153 @@ class TestRuntimeSafety(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(manager.user_states), 4)
         self.assertIn(9, manager.user_states)
+
+    async def test_add_gate_blocks_at_limit_without_github_write(self):
+        manager = self._make_rate_limited_manager(max_adds=2)
+        manager.user_add_history[123] = [time.time(), time.time()]
+
+        result = await manager._add_domain_with_limit(
+            123,
+            "example.com",
+            "Alice",
+        )
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["rate_limited"])
+        self.assertEqual(result["rate_limit_remaining"], 0)
+        self.assertEqual(len(manager.user_add_history[123]), 2)
+        manager.github_service.add_domain_to_rules.assert_not_awaited()
+
+    async def test_add_gate_counts_success_and_rolls_back_failures(self):
+        manager = self._make_rate_limited_manager()
+        manager.github_service.add_domain_to_rules.side_effect = [
+            {"success": True, "commit_sha": "abc"},
+            {"success": False, "error": "write failed"},
+            RuntimeError("write crashed"),
+        ]
+
+        success = await manager._add_domain_with_limit(
+            123,
+            "one.example",
+            "Alice",
+            "admin add",
+            force_add=True,
+        )
+        failure = await manager._add_domain_with_limit(
+            123,
+            "two.example",
+            "Alice",
+        )
+        with self.assertRaisesRegex(RuntimeError, "write crashed"):
+            await manager._add_domain_with_limit(
+                123,
+                "three.example",
+                "Alice",
+            )
+
+        self.assertTrue(success["success"])
+        self.assertEqual(success["rate_limit_remaining"], 49)
+        self.assertFalse(failure["success"])
+        self.assertEqual(len(manager.user_add_history[123]), 1)
+        self.assertEqual(
+            manager.github_service.add_domain_to_rules.await_args_list[0].args,
+            ("one.example", "Alice", "admin add"),
+        )
+        self.assertTrue(
+            manager.github_service.add_domain_to_rules.await_args_list[0].kwargs[
+                "force_add"
+            ]
+        )
+
+    async def test_add_gate_rolls_back_cancelled_write(self):
+        manager = self._make_rate_limited_manager()
+        manager.github_service.add_domain_to_rules.side_effect = (
+            asyncio.CancelledError
+        )
+
+        with self.assertRaises(asyncio.CancelledError):
+            await manager._add_domain_with_limit(
+                123,
+                "example.com",
+                "Alice",
+            )
+
+        self.assertNotIn(123, manager.user_add_history)
+
+    async def test_add_gate_reserves_slot_before_concurrent_write(self):
+        manager = self._make_rate_limited_manager(max_adds=1)
+        write_started = asyncio.Event()
+        allow_write = asyncio.Event()
+
+        async def slow_write(*args, **kwargs):
+            write_started.set()
+            await allow_write.wait()
+            return {"success": True}
+
+        manager.github_service.add_domain_to_rules.side_effect = slow_write
+        first_task = asyncio.create_task(
+            manager._add_domain_with_limit(123, "one.example", "Alice")
+        )
+        await write_started.wait()
+
+        second = await manager._add_domain_with_limit(
+            123,
+            "two.example",
+            "Alice",
+        )
+        allow_write.set()
+        first = await first_task
+
+        self.assertTrue(first["success"])
+        self.assertFalse(second["success"])
+        self.assertTrue(second["rate_limited"])
+        self.assertEqual(
+            manager.github_service.add_domain_to_rules.await_count,
+            1,
+        )
+        self.assertEqual(len(manager.user_add_history[123]), 1)
+
+    def test_source_has_one_github_add_gateway(self):
+        direct_callers = []
+
+        class GithubAddVisitor(ast.NodeVisitor):
+            def __init__(self, source_path):
+                self.source_path = source_path
+                self.current_function = None
+
+            def visit_FunctionDef(self, node):
+                previous = self.current_function
+                self.current_function = node.name
+                self.generic_visit(node)
+                self.current_function = previous
+
+            def visit_AsyncFunctionDef(self, node):
+                previous = self.current_function
+                self.current_function = node.name
+                self.generic_visit(node)
+                self.current_function = previous
+
+            def visit_Call(self, node):
+                function = node.func
+                if (
+                    isinstance(function, ast.Attribute)
+                    and function.attr == "add_domain_to_rules"
+                ):
+                    direct_callers.append(
+                        (self.source_path, self.current_function)
+                    )
+                self.generic_visit(node)
+
+        source_root = Path(__file__).parents[1] / "src"
+        for source_file in source_root.rglob("*.py"):
+            source_path = source_file.relative_to(source_root).as_posix()
+            tree = ast.parse(source_file.read_text(encoding="utf-8"))
+            GithubAddVisitor(source_path).visit(tree)
+
+        self.assertEqual(
+            direct_callers,
+            [("handlers/handler_manager.py", "_add_domain_with_limit")],
+        )
 
     async def test_announcement_only_runs_for_private_success(self):
         manager = HandlerManager.__new__(HandlerManager)

@@ -124,7 +124,9 @@ class HandlerManager:
         self, 
         domain: str, 
         username: str, 
-        description: str = ""
+        description: str = "",
+        *,
+        user_id: int,
     ) -> dict:
         """自动检查并添加域名（无需用户确认）
         
@@ -134,6 +136,7 @@ class HandlerManager:
             domain: 待添加的域名（应为二级域名格式）
             username: 用户名（用于 commit 记录）
             description: 域名说明（可选）
+            user_id: 用户 ID（用于频率限制）
             
         Returns:
             {
@@ -193,8 +196,8 @@ class HandlerManager:
             if not target_domain:
                 target_domain = domain
             
-            add_result = await self.github_service.add_domain_to_rules(
-                target_domain, username, description
+            add_result = await self._add_domain_with_limit(
+                user_id, target_domain, username, description
             )
             
             if add_result.get("success"):
@@ -204,7 +207,8 @@ class HandlerManager:
                     "message": "域名已成功添加到直连规则",
                     "commit_url": add_result.get("commit_url", ""),
                     "commit_sha": add_result.get("commit_sha", ""),
-                    "target_domain": target_domain
+                    "target_domain": target_domain,
+                    "rate_limit_remaining": add_result["rate_limit_remaining"],
                 }
             else:
                 return {
@@ -349,10 +353,66 @@ class HandlerManager:
                 self.user_add_history.pop(uid, None)
         self._last_history_cleanup = now
     
-    def record_user_add(self, user_id: int):
+    def record_user_add(self, user_id: int) -> float:
         """记录用户添加操作"""
         current_time = time.time()
         self.user_add_history[user_id].append(current_time)
+        return current_time
+
+    def _rollback_user_add(self, user_id: int, timestamp: float) -> None:
+        """回滚一次尚未成功的添加占位。"""
+        history = self.user_add_history.get(user_id)
+        if not history:
+            return
+        try:
+            history.remove(timestamp)
+        except ValueError:
+            return
+        if not history:
+            self.user_add_history.pop(user_id, None)
+
+    async def _add_domain_with_limit(
+        self,
+        user_id: int,
+        domain: str,
+        username: str,
+        description: str = "",
+        *,
+        force_add: bool = False,
+    ) -> dict:
+        """在唯一写入门禁内执行 GitHub 添加，并只统计成功写入。"""
+        can_add, remaining = self.check_user_add_limit(user_id)
+        if not can_add:
+            return {
+                "success": False,
+                "rate_limited": True,
+                "rate_limit_remaining": max(0, remaining),
+                "error": (
+                    f"您在当前小时内已达到添加上限（{self.MAX_ADDS_PER_HOUR}个域名）。"
+                    "请等待一小时后再尝试。"
+                ),
+            }
+
+        reservation = self.record_user_add(user_id)
+        try:
+            add_result = await self.github_service.add_domain_to_rules(
+                domain,
+                username,
+                description,
+                force_add=force_add,
+            )
+            if not add_result.get("success"):
+                self._rollback_user_add(user_id, reservation)
+                return add_result
+        except BaseException:
+            self._rollback_user_add(user_id, reservation)
+            raise
+
+        add_result["rate_limit_remaining"] = max(
+            0,
+            self.MAX_ADDS_PER_HOUR - len(self.user_add_history[user_id]),
+        )
+        return add_result
 
     def is_admin(self, user_id: int) -> bool:
         """检查是否管理员"""
@@ -1353,7 +1413,8 @@ class HandlerManager:
             target_domain = self.domain_checker.get_target_domain_to_add(check_result) or domain
             username = query.from_user.first_name or query.from_user.username or str(query.from_user.id)
 
-            add_result = await self.github_service.add_domain_to_rules(
+            add_result = await self._add_domain_with_limit(
+                user_id,
                 target_domain,
                 username,
                 "",
@@ -1361,8 +1422,7 @@ class HandlerManager:
             )
 
             if add_result.get("success"):
-                self.record_user_add(user_id)
-                _, remaining = self.check_user_add_limit(user_id)
+                remaining = add_result["rate_limit_remaining"]
 
                 result_text = "✅ *域名添加成功（管理员权限）！*\n\n"
                 result_text += f"📍 *域名：* `{target_domain}`\n"
@@ -1522,16 +1582,12 @@ class HandlerManager:
             await query.edit_message_text("⏳ 正在添加域名到 GitHub 规则...")
             
             # 添加到 GitHub
-            add_result = await self.github_service.add_domain_to_rules(
-                target_domain, username, description
+            add_result = await self._add_domain_with_limit(
+                user_id, target_domain, username, description
             )
             
             if add_result.get("success"):
-                # 记录用户添加历史
-                self.record_user_add(user_id)
-                
-                # 获取剩余添加次数
-                _, remaining = self.check_user_add_limit(user_id)
+                remaining = add_result["rate_limit_remaining"]
                 
                 result_text = "✅ *域名添加成功！*\n\n"
                 result_text += f"📍 *域名：* `{target_domain}`\n"
@@ -1594,16 +1650,12 @@ class HandlerManager:
             
             # 添加到 GitHub
             username = message.from_user.first_name or message.from_user.username or str(message.from_user.id)
-            add_result = await self.github_service.add_domain_to_rules(
-                target_domain, username, description
+            add_result = await self._add_domain_with_limit(
+                user_id, target_domain, username, description
             )
             
             if add_result.get("success"):
-                # 记录用户添加历史
-                self.record_user_add(user_id)
-                
-                # 获取剩余添加次数
-                _, remaining = self.check_user_add_limit(user_id)
+                remaining = add_result["rate_limit_remaining"]
                 
                 result_text = "✅ *域名添加成功！*\n\n"
                 result_text += f"📍 *域名：* `{target_domain}`\n"

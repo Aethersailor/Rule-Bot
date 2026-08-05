@@ -142,16 +142,27 @@ class DataManager:
     async def _download_initial_data(self):
         """初始下载数据"""
         try:
-            # 检查是否需要下载
-            need_geoip = not self.geoip_file.exists() or self._is_file_outdated(
+            # 启动时先验证持久化数据；即使文件仍在更新周期内，损坏数据也必须重下。
+            existing_valid = {
+                "geoip": self._inspect_existing_data(
+                    self.geoip_file, "geoip", self.geoip_meta
+                )[0],
+                "cn_ipv4": self._inspect_existing_data(
+                    self.cn_ipv4_file, "cn_ipv4", self.cn_ipv4_meta
+                )[0],
+                "geosite": self._inspect_existing_data(
+                    self.geosite_file, "geosite", self.geosite_meta
+                )[0],
+            }
+            need_geoip = not existing_valid["geoip"] or self._is_file_outdated(
                 self.geoip_file,
                 self.config.DATA_UPDATE_INTERVAL
             )
-            need_cn_ipv4 = not self.cn_ipv4_file.exists() or self._is_file_outdated(
+            need_cn_ipv4 = not existing_valid["cn_ipv4"] or self._is_file_outdated(
                 self.cn_ipv4_file,
                 self.config.DATA_UPDATE_INTERVAL
             )
-            need_geosite = not self.geosite_file.exists() or self._is_file_outdated(
+            need_geosite = not existing_valid["geosite"] or self._is_file_outdated(
                 self.geosite_file,
                 self.config.DATA_UPDATE_INTERVAL
             )
@@ -177,7 +188,7 @@ class DataManager:
                 missing_failures = []
                 for (label, path), result in zip(labels, results):
                     if isinstance(result, BaseException):
-                        if path.exists():
+                        if existing_valid[label]:
                             logger.warning("{} 更新失败，继续使用现有数据: {}", label, result)
                         else:
                             missing_failures.append(f"{label}: {result}")
@@ -466,16 +477,45 @@ class DataManager:
             logger.debug(f"保存 meta 失败: {e}")
 
     @staticmethod
-    def _validate_download(path: Path, label: str) -> None:
+    def _sha256_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _inspect_existing_data(
+        self,
+        path: Path,
+        label: str,
+        meta_path: Path,
+    ) -> tuple[bool, Optional[str], Optional[int]]:
+        """验证现有数据的格式及持久化 hash，供启动和条件请求复用。"""
+        if not path.exists():
+            return False, None, None
+        try:
+            metric = self._validate_download(path, label)
+            digest = self._sha256_file(path)
+            expected_hash = self._load_meta(meta_path).get("sha256")
+            if expected_hash and digest != expected_hash:
+                raise ValueError("文件 hash 与 meta 不一致")
+            return True, digest, metric
+        except Exception as e:
+            logger.warning("{} 现有数据校验失败，将尝试重新下载: {}", label, e)
+            return False, None, None
+
+    @staticmethod
+    def _validate_download(path: Path, label: str) -> int:
         """Reject truncated or wrong-content upstream responses before replace."""
         if label == "geoip":
-            if path.stat().st_size < 100_000:
+            size = path.stat().st_size
+            if size < 100_000:
                 raise ValueError("GeoIP 文件过小")
             import maxminddb
 
             reader = maxminddb.open_database(str(path))
             reader.close()
-            return
+            return size
 
         if label == "cn_ipv4":
             valid = 0
@@ -485,21 +525,70 @@ class DataManager:
                     if not line or line.startswith("#"):
                         continue
                     network = ipaddress.ip_network(line, strict=False)
-                    if isinstance(network, ipaddress.IPv4Network):
-                        valid += 1
+                    if not isinstance(network, ipaddress.IPv4Network):
+                        raise ValueError("中国 IPv4 CIDR 数据包含非 IPv4 条目")
+                    valid += 1
             if valid < 100:
                 raise ValueError("中国 IPv4 CIDR 数据有效条目不足")
-            return
+            return valid
 
         if label == "geosite":
             valid = 0
             with path.open("r", encoding="utf-8") as handle:
                 for line in handle:
                     line = line.strip()
-                    if line and not line.startswith("#"):
-                        valid += 1
+                    if not line or line.startswith("#"):
+                        continue
+                    if len(line) > 4096 or "\x00" in line:
+                        raise ValueError("GeoSite 数据包含异常长行或空字节")
+
+                    prefix, separator, value = line.partition(":")
+                    if separator and prefix in {
+                        "full",
+                        "domain",
+                        "keyword",
+                        "regexp",
+                        "include",
+                        "geosite",
+                    }:
+                        value = value.strip()
+                        if not value:
+                            raise ValueError(f"GeoSite {prefix} 规则内容为空")
+                        if prefix == "regexp":
+                            re.compile(value)
+                        elif prefix in {"full", "domain"}:
+                            DataManager._validate_geosite_domain(value)
+                    else:
+                        DataManager._validate_geosite_domain(line)
+                    valid += 1
             if valid < 100:
                 raise ValueError("GeoSite 数据有效条目不足")
+            return valid
+
+        raise ValueError(f"未知的数据类型: {label}")
+
+    @staticmethod
+    def _validate_geosite_domain(value: str) -> None:
+        """做宽松格式校验，拒绝 HTML/JSON 等明显错误响应。"""
+        if (
+            not value
+            or any(character.isspace() for character in value)
+            or any(character in value for character in '<>{}[]"\'\\/')
+            or ":" in value
+        ):
+            raise ValueError("GeoSite 数据包含非域名格式条目")
+
+    @staticmethod
+    def _validate_conservative_shrink(
+        label: str,
+        new_metric: int,
+        old_metric: Optional[int],
+    ) -> None:
+        """已有有效基线时，拒绝一次缩减超过一半的可疑上游数据。"""
+        if old_metric and new_metric * 2 < old_metric:
+            raise ValueError(
+                f"{label} 数据规模异常缩减: {old_metric} -> {new_metric}"
+            )
 
     async def _download_with_fallback(
         self,
@@ -512,72 +601,100 @@ class DataManager:
         last_error = None
         session = await self._get_session()
         current_meta = self._load_meta(meta_path)
-        conditional_headers = {}
-        if dest_path.exists():
-            if current_meta.get("etag"):
-                conditional_headers["If-None-Match"] = current_meta["etag"]
-            if current_meta.get("last_modified"):
-                conditional_headers["If-Modified-Since"] = current_meta["last_modified"]
+        existing_valid, existing_hash, existing_metric = self._inspect_existing_data(
+            dest_path,
+            label,
+            meta_path,
+        )
 
-        for idx, url in enumerate(urls):
+        for url in urls:
             try:
-                # 仅在首选源使用条件请求头，避免不同镜像之间复用 ETag/Last-Modified。
-                headers = conditional_headers if idx == 0 else {}
-                start_ts = time.perf_counter()
-                async with session.get(url, headers=headers) as response:
-                    if response.status == 304:
-                        logger.info("{} 数据未更新（304）: {}", label, url)
+                # ETag/Last-Modified 只属于生成它们的 URL，不能跨镜像复用。
+                headers = {}
+                if existing_valid and current_meta.get("source") == url:
+                    if current_meta.get("etag"):
+                        headers["If-None-Match"] = current_meta["etag"]
+                    if current_meta.get("last_modified"):
+                        headers["If-Modified-Since"] = current_meta["last_modified"]
+
+                while True:
+                    start_ts = time.perf_counter()
+                    async with session.get(url, headers=headers) as response:
+                        if response.status == 304:
+                            valid_now, hash_now, metric_now = self._inspect_existing_data(
+                                dest_path,
+                                label,
+                                meta_path,
+                            )
+                            if valid_now:
+                                logger.info("{} 数据未更新（304）: {}", label, url)
+                                METRICS.record_request(
+                                    f"data.download.{label}",
+                                    (time.perf_counter() - start_ts) * 1000,
+                                    success=True
+                                )
+                                return False
+                            if headers:
+                                logger.warning(
+                                    "{} 收到 304 但本地数据已损坏，改为无条件重新下载",
+                                    label,
+                                )
+                                headers = {}
+                                existing_valid = False
+                                existing_hash = hash_now
+                                existing_metric = metric_now
+                                continue
+                            last_error = "服务器在无条件请求中返回 304"
+                            break
+                        if response.status != 200:
+                            last_error = f"下载失败，状态码: {response.status}"
+                            logger.warning("{} 数据下载失败: {} (状态码: {})", label, url, response.status)
+                            break
+
+                        tmp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
+                        digest = hashlib.sha256()
+                        size = 0
+                        with tmp_path.open("wb") as handle:
+                            async for chunk in response.content.iter_chunked(8192):
+                                handle.write(chunk)
+                                digest.update(chunk)
+                                size += len(chunk)
+
+                        new_metric = self._validate_download(tmp_path, label)
+                        if existing_valid:
+                            self._validate_conservative_shrink(
+                                label,
+                                new_metric,
+                                existing_metric,
+                            )
+
+                        new_hash = digest.hexdigest()
+                        changed = not existing_valid or existing_hash != new_hash
+                        if changed:
+                            tmp_path.replace(dest_path)
+                        else:
+                            tmp_path.unlink(missing_ok=True)
+
+                        meta = {
+                            "etag": response.headers.get("ETag"),
+                            "last_modified": response.headers.get("Last-Modified"),
+                            "sha256": new_hash,
+                            "size": size,
+                            "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                            "source": url
+                        }
+                        self._save_meta(meta_path, meta)
+
+                        if changed:
+                            logger.info("{} 数据下载完成: {}", label, url)
+                        else:
+                            logger.info("{} 数据未变化（hash 相同）: {}", label, url)
                         METRICS.record_request(
                             f"data.download.{label}",
                             (time.perf_counter() - start_ts) * 1000,
                             success=True
                         )
-                        return False
-                    if response.status != 200:
-                        last_error = f"下载失败，状态码: {response.status}"
-                        logger.warning("{} 数据下载失败: {} (状态码: {})", label, url, response.status)
-                        continue
-
-                    tmp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
-                    digest = hashlib.sha256()
-                    size = 0
-                    with tmp_path.open("wb") as handle:
-                        async for chunk in response.content.iter_chunked(8192):
-                            handle.write(chunk)
-                            digest.update(chunk)
-                            size += len(chunk)
-
-                    self._validate_download(tmp_path, label)
-
-                    new_hash = digest.hexdigest()
-                    old_hash = current_meta.get("sha256")
-                    changed = True
-                    if dest_path.exists() and old_hash and old_hash == new_hash:
-                        changed = False
-                        tmp_path.unlink(missing_ok=True)
-                    else:
-                        tmp_path.replace(dest_path)
-
-                    meta = {
-                        "etag": response.headers.get("ETag"),
-                        "last_modified": response.headers.get("Last-Modified"),
-                        "sha256": new_hash,
-                        "size": size,
-                        "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                        "source": url
-                    }
-                    self._save_meta(meta_path, meta)
-
-                    if changed:
-                        logger.info("{} 数据下载完成: {}", label, url)
-                    else:
-                        logger.info("{} 数据未变化（hash 相同）: {}", label, url)
-                    METRICS.record_request(
-                        f"data.download.{label}",
-                        (time.perf_counter() - start_ts) * 1000,
-                        success=True
-                    )
-                    return changed
+                        return changed
             except Exception as e:
                 try:
                     tmp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")

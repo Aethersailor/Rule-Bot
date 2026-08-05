@@ -5,11 +5,17 @@
 
 import secrets
 import time
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 from collections import defaultdict
 from loguru import logger
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    CopyTextButton,
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import ContextTypes
 
 from ..config import Config
@@ -19,6 +25,7 @@ from ..services.geoip_service import GeoIPService
 from ..services.github_service import GitHubService
 from ..services.domain_checker import DomainChecker
 from ..services.group_service import GroupService
+from ..services.matchscope_token_service import MatchScopeTokenService
 from ..utils.domain_utils import normalize_domain, extract_second_level_domain, extract_second_level_domain_for_rules, is_cn_domain
 from ..utils.input_safety import validate_single_line_text
 
@@ -56,7 +63,7 @@ class HandlerManager:
         # Runtime state is initialized before Telegram starts so callbacks can
         # never observe partially initialized dictionaries.
         self.user_states: Dict[int, Dict[str, Any]] = {}
-        self.user_add_history: Dict[int, list] = defaultdict(list)
+        self.user_add_history: Dict[object, list] = defaultdict(list)
         self._pending_actions: Dict[tuple[int, str], Dict[str, Any]] = {}
         self._last_history_cleanup = 0
         self._last_state_cleanup = 0.0
@@ -74,6 +81,14 @@ class HandlerManager:
         self.group_service = None
         if application:
             self.group_service = GroupService(config, application.bot)
+        self.matchscope_token_service = None
+        if config.MATCHSCOPE_PUBLIC_API_ENABLED:
+            self.matchscope_token_service = MatchScopeTokenService(
+                config.MATCHSCOPE_TOKEN_DATABASE
+                or (data_manager.data_dir / "matchscope_tokens.sqlite3"),
+                config.MATCHSCOPE_TOKEN_SIGNING_KEY,
+                config.MATCHSCOPE_TOKEN_TTL_DAYS,
+            )
 
     async def start(self):
         """启动服务"""
@@ -127,6 +142,8 @@ class HandlerManager:
         description: str = "",
         *,
         user_id: int,
+        source: str = "telegram",
+        max_adds: Optional[int] = None,
     ) -> dict:
         """自动检查并添加域名（无需用户确认）
         
@@ -161,6 +178,7 @@ class HandlerManager:
                 return {
                     "success": True,
                     "action": "exists",
+                    "reason": "rules",
                     "message": f"域名已存在于 GitHub 规则中（{match_info}）"
                 }
             
@@ -170,6 +188,7 @@ class HandlerManager:
                 return {
                     "success": True,
                     "action": "exists",
+                    "reason": "geosite",
                     "message": "域名已存在于 GEOSITE:CN 中，无需重复添加"
                 }
             
@@ -197,7 +216,12 @@ class HandlerManager:
                 target_domain = domain
             
             add_result = await self._add_domain_with_limit(
-                user_id, target_domain, username, description
+                user_id,
+                target_domain,
+                username,
+                description,
+                source=source,
+                max_adds=max_adds,
             )
             
             if add_result.get("success"):
@@ -210,11 +234,19 @@ class HandlerManager:
                     "target_domain": target_domain,
                     "rate_limit_remaining": add_result["rate_limit_remaining"],
                 }
+            elif add_result.get("already_exists"):
+                return {
+                    "success": True,
+                    "action": "exists",
+                    "reason": "rules",
+                    "message": "域名已存在于 GitHub 规则中",
+                }
             else:
                 return {
                     "success": False,
                     "action": "error",
-                    "message": add_result.get("error", "添加失败，未知错误")
+                    "message": add_result.get("error", "添加失败，未知错误"),
+                    "rate_limited": add_result.get("rate_limited", False),
                 }
                 
         except Exception as e:
@@ -241,6 +273,50 @@ class HandlerManager:
                 "updated_at": time.monotonic(),
             }
         return self.user_states[user_id]
+
+    async def submit_matchscope_domain(
+        self,
+        domain_input: str,
+        *,
+        source: str,
+        rate_key: object,
+        max_adds: int,
+    ) -> dict:
+        """Normalize and submit one API domain through the Telegram business rules."""
+        normalized = normalize_domain(domain_input)
+        if not normalized:
+            return {"status": "invalid_domain"}
+        if is_cn_domain(normalized):
+            return {"status": "ignored_cn", "domain": normalized}
+        domain = extract_second_level_domain_for_rules(normalized)
+        if not domain:
+            return {"status": "invalid_domain"}
+
+        result = await self.check_and_add_domain_auto(
+            domain,
+            "MatchScope Community" if source == "matchscope_community" else "MatchScope",
+            user_id=rate_key,
+            source=source,
+            max_adds=max_adds,
+        )
+        if result.get("action") == "added":
+            return {
+                "status": "added",
+                "domain": result.get("target_domain", domain),
+                "commit_url": result.get("commit_url", ""),
+            }
+        if result.get("action") == "exists":
+            return {
+                "status": (
+                    "exists_geosite" if result.get("reason") == "geosite" else "exists_rules"
+                ),
+                "domain": domain,
+            }
+        if result.get("action") == "rejected":
+            return {"status": "rejected_policy", "domain": domain}
+        if result.get("rate_limited"):
+            return {"status": "rate_limited", "domain": domain}
+        return {"status": "temporary_error", "domain": domain}
     
     def set_user_state(self, user_id: int, state: str, data: Dict[str, Any] = None):
         """设置用户状态"""
@@ -318,7 +394,9 @@ class HandlerManager:
             self._pending_actions.pop(key, None)
         return item.get("data", {})
     
-    def check_user_add_limit(self, user_id: int) -> tuple[bool, int]:
+    def check_user_add_limit(
+        self, user_id: object, max_adds: Optional[int] = None
+    ) -> tuple[bool, int]:
         """检查用户添加频率限制
         
         Returns:
@@ -336,9 +414,10 @@ class HandlerManager:
         
         # 检查当前小时内的添加次数
         current_count = len(self.user_add_history[user_id])
-        remaining = self.MAX_ADDS_PER_HOUR - current_count
-        
-        return current_count < self.MAX_ADDS_PER_HOUR, remaining
+        limit = max_adds if max_adds is not None else self.MAX_ADDS_PER_HOUR
+        remaining = limit - current_count
+
+        return current_count < limit, remaining
 
     def _maybe_cleanup_user_history(self) -> None:
         now = time.time()
@@ -373,22 +452,25 @@ class HandlerManager:
 
     async def _add_domain_with_limit(
         self,
-        user_id: int,
+        user_id: object,
         domain: str,
         username: str,
         description: str = "",
         *,
         force_add: bool = False,
+        source: str = "telegram",
+        max_adds: Optional[int] = None,
     ) -> dict:
         """在唯一写入门禁内执行 GitHub 添加，并只统计成功写入。"""
-        can_add, remaining = self.check_user_add_limit(user_id)
+        limit = max_adds if max_adds is not None else self.MAX_ADDS_PER_HOUR
+        can_add, remaining = self.check_user_add_limit(user_id, limit)
         if not can_add:
             return {
                 "success": False,
                 "rate_limited": True,
                 "rate_limit_remaining": max(0, remaining),
                 "error": (
-                    f"您在当前小时内已达到添加上限（{self.MAX_ADDS_PER_HOUR}个域名）。"
+                    f"您在当前小时内已达到添加上限（{limit}个域名）。"
                     "请等待一小时后再尝试。"
                 ),
             }
@@ -400,6 +482,7 @@ class HandlerManager:
                 username,
                 description,
                 force_add=force_add,
+                source=source,
             )
             if not add_result.get("success"):
                 self._rollback_user_add(user_id, reservation)
@@ -410,7 +493,7 @@ class HandlerManager:
 
         add_result["rate_limit_remaining"] = max(
             0,
-            self.MAX_ADDS_PER_HOUR - len(self.user_add_history[user_id]),
+            limit - len(self.user_add_history[user_id]),
         )
         return add_result
 
@@ -482,6 +565,11 @@ class HandlerManager:
             [InlineKeyboardButton("➖ 删除规则", callback_data="delete_rule")],
             [InlineKeyboardButton("ℹ️ 帮助信息", callback_data="help")]
         ]
+        if self.config.MATCHSCOPE_PUBLIC_API_ENABLED:
+            keyboard.insert(
+                4,
+                [InlineKeyboardButton("🔗 MatchScope 接入", callback_data="matchscope_access")],
+            )
         return InlineKeyboardMarkup(keyboard)
 
     def _build_help_text(self) -> str:
@@ -650,37 +738,12 @@ class HandlerManager:
                 return
             
             user = update.effective_user
-            username = self.escape_markdown(user.first_name or user.username or "用户")
-            
-            welcome_text = f"""
-👋 你好，{username}！
-
-我是 *Rule-Bot*，可以帮你管理 Clash 规则。
-
-📂 *当前管理仓库*
-`{self.config.GITHUB_REPO}`
-
-✨ *我能做什么*
-• 🔍 查询域名是否已在规则中
-• 🌍 检查域名 IP 归属地（支持 DNS 解析）
-• 🤖 智能判断域名是否适合直连
-• 📝 一键添加域名到规则文件
-• 🗑️ 删除已添加的域名规则（暂未开放）
-
-💡 *使用提示*
-直接在聊天框输入域名即可查询，或点击下方按钮操作。
-"""
-            
-            keyboard = [
-                [InlineKeyboardButton("🔍 查询域名", callback_data="query_domain")],
-                [InlineKeyboardButton("➕ 添加直连规则", callback_data="add_direct_rule")],
-                [InlineKeyboardButton("➕ 添加代理规则", callback_data="add_proxy_rule")],
-                [InlineKeyboardButton("➖ 删除规则", callback_data="delete_rule")],
-                [InlineKeyboardButton("ℹ️ 帮助信息", callback_data="help")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+            username = user.first_name or user.username or "用户"
+            await update.message.reply_text(
+                self._build_main_menu_text(username),
+                reply_markup=self._build_main_menu_keyboard(),
+                parse_mode="Markdown",
+            )
             
             # 重置用户状态
             self.set_user_state(user.id, "idle")
@@ -784,15 +847,21 @@ class HandlerManager:
             if not self.is_update_context_allowed(update):
                 await query.answer("当前会话不在允许范围内", show_alert=True)
                 return
-            # 检查群组成员身份
-            if not await self.check_group_membership(update):
+            data = query.data
+            self_service_callbacks = {
+                "matchscope_access",
+                "matchscope_issue",
+                "matchscope_revoke",
+                "matchscope_delete_credential",
+            }
+            # MatchScope issuance performs its own fresh membership check;
+            # access, revocation and credential deletion remain available.
+            if data not in self_service_callbacks and not await self.check_group_membership(update):
                 return
             
             await query.answer()
             
             user_id = update.effective_user.id
-            data = query.data
-            
             if data == "main_menu":
                 await self._show_main_menu(query)
             elif data == "query_domain":
@@ -805,6 +874,14 @@ class HandlerManager:
                 await self._show_delete_not_supported(query)
             elif data == "help":
                 await self._show_help(query)
+            elif data == "matchscope_access":
+                await self._show_matchscope_access(query, user_id)
+            elif data == "matchscope_issue":
+                await self._issue_matchscope_token(query, user_id)
+            elif data == "matchscope_revoke":
+                await self._revoke_matchscope_token(query, user_id)
+            elif data == "matchscope_delete_credential":
+                await query.message.delete()
             elif data.startswith("add_domain|"):
                 await self._handle_add_domain_callback(query, user_id, data)
             elif data.startswith("confirm_add|"):
@@ -860,6 +937,108 @@ class HandlerManager:
         welcome_text = self._build_main_menu_text(username)
         reply_markup = self._build_main_menu_keyboard()
         await message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+
+    def _matchscope_endpoint(self) -> str:
+        return (
+            f"{self.config.MATCHSCOPE_PUBLIC_BASE_URL}"
+            f"{self.config.MATCHSCOPE_PUBLIC_API_PATH}"
+        )
+
+    async def _show_matchscope_access(self, query, user_id: int):
+        """Show self-service token status without exposing the credential."""
+        if not self.matchscope_token_service:
+            await query.edit_message_text("MatchScope 社区接入当前未开放。")
+            return
+        status = await self.matchscope_token_service.status(user_id)
+        active = bool(
+            status
+            and status.get("enabled")
+            and int(status.get("expires_at", 0)) > int(time.time())
+        )
+        status_text = "尚未签发或已失效"
+        issue_label = "🔑 申请 Token"
+        if active:
+            expires = datetime.fromtimestamp(
+                int(status["expires_at"]), timezone.utc
+            ).strftime("%Y-%m-%d %H:%M UTC")
+            status_text = f"有效，有效期至 {expires}"
+            issue_label = "🔄 重新签发 Token"
+        keyboard = [
+            [InlineKeyboardButton(issue_label, callback_data="matchscope_issue")],
+        ]
+        if active:
+            keyboard.append(
+                [InlineKeyboardButton("🚫 吊销当前 Token", callback_data="matchscope_revoke")]
+            )
+        keyboard.append([InlineKeyboardButton("🏠 返回主菜单", callback_data="main_menu")])
+        await query.edit_message_text(
+            "🔗 *MatchScope 社区接入*\n\n"
+            "群成员可以自行申请独立 Token，无需管理员逐个维护。\n"
+            "重新签发会立即使旧 Token 失效。\n\n"
+            f"🔐 *状态：* {status_text}\n"
+            f"🌐 *入口：* `{self._matchscope_endpoint()}`\n\n"
+            "Token 只会显示一次，请保存在 MatchScope 的独立凭据文件中。",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+        )
+
+    async def _issue_matchscope_token(self, query, user_id: int):
+        """Freshly verify membership and deliver a one-time credential message."""
+        membership = await self.group_service.check_user_in_group(
+            user_id, force_refresh=True
+        )
+        if membership is not True:
+            if membership is False:
+                message = self.group_service.get_join_group_message()
+            else:
+                message = "⚠️ 群组验证失败，请稍后重试。"
+            await query.edit_message_text(message, parse_mode="Markdown")
+            return
+
+        issued = await self.matchscope_token_service.issue(user_id)
+        token = issued["token"]
+        endpoint = self._matchscope_endpoint()
+        expires = datetime.fromtimestamp(
+            issued["expires_at"], timezone.utc
+        ).strftime("%Y-%m-%d %H:%M UTC")
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "📋 复制 Token", copy_text=CopyTextButton(text=token)
+                    ),
+                    InlineKeyboardButton(
+                        "📋 复制入口", copy_text=CopyTextButton(text=endpoint)
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🗑️ 删除凭据消息",
+                        callback_data="matchscope_delete_credential",
+                    )
+                ],
+            ]
+        )
+        await query.message.reply_text(
+            "✅ *MatchScope Token 已签发*\n\n"
+            f"🌐 *入口*\n`{endpoint}`\n\n"
+            f"🔑 *Token*\n`{token}`\n\n"
+            f"⏳ *有效期至：* {expires}\n\n"
+            "请将入口与 Token 写入 MatchScope 配置；不要转发本消息。",
+            reply_markup=keyboard,
+            parse_mode="Markdown",
+        )
+        await self._show_matchscope_access(query, user_id)
+
+    async def _revoke_matchscope_token(self, query, user_id: int):
+        revoked = await self.matchscope_token_service.revoke(user_id)
+        text = "当前 Token 已吊销。" if revoked else "当前没有可吊销的 Token。"
+        await query.edit_message_text(
+            f"🚫 {text}",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("↩️ 返回接入页", callback_data="matchscope_access")]]
+            ),
+        )
 
     async def _start_domain_query(self, query, user_id: int):
         """开始域名查询"""

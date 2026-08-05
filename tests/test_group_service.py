@@ -26,6 +26,23 @@ class TestGroupService(unittest.TestCase):
         self.assertIn("https://t.me/group\\_name\\(test\\)", message)
 
 
+class TestGroupMembership(unittest.IsolatedAsyncioTestCase):
+    async def test_force_refresh_bypasses_cached_membership(self):
+        bot = AsyncMock()
+        bot.get_chat_member.return_value = SimpleNamespace(status="member")
+        config = SimpleNamespace(
+            GROUP_CHECK_ENABLED=True,
+            ANNOUNCEMENT_GROUP_ID=None,
+            REQUIRED_GROUP_ID=-1001234567890,
+        )
+        service = GroupService(config, bot)
+        service._membership_cache.set(123, False)
+
+        self.assertFalse(await service.check_user_in_group(123))
+        self.assertTrue(await service.check_user_in_group(123, force_refresh=True))
+        bot.get_chat_member.assert_awaited_once()
+
+
 class TestGroupAnnouncements(unittest.IsolatedAsyncioTestCase):
     async def test_disabled_announcement_does_not_call_telegram(self):
         bot = AsyncMock()

@@ -4,7 +4,9 @@
 
 import os
 import re
+from pathlib import Path
 from typing import Optional, Dict
+from urllib.parse import urlparse
 from loguru import logger
 
 
@@ -32,6 +34,65 @@ class Config:
 
         # 数据目录（可选）
         self.DATA_DIR = os.getenv("DATA_DIR", "").strip()
+
+        # MatchScope HTTP ingress (disabled by default for seamless upgrades).
+        self.MATCHSCOPE_PRIVATE_API_ENABLED = self._parse_bool_env(
+            "MATCHSCOPE_PRIVATE_API_ENABLED", False
+        )
+        self.MATCHSCOPE_PRIVATE_API_HOST = os.getenv(
+            "MATCHSCOPE_PRIVATE_API_HOST", "0.0.0.0"
+        ).strip()
+        self.MATCHSCOPE_PRIVATE_API_PORT = self._parse_int_env(
+            "MATCHSCOPE_PRIVATE_API_PORT", 8765, min_value=1, max_value=65535
+        )
+        self.MATCHSCOPE_PRIVATE_API_PATH = self._parse_api_path(
+            "MATCHSCOPE_PRIVATE_API_PATH"
+        )
+        self.MATCHSCOPE_PRIVATE_API_TOKEN = self._read_secret(
+            "MATCHSCOPE_PRIVATE_API_TOKEN"
+        )
+        self.MATCHSCOPE_PRIVATE_RATE_LIMIT_PER_HOUR = self._parse_int_env(
+            "MATCHSCOPE_PRIVATE_RATE_LIMIT_PER_HOUR", 1000, min_value=1
+        )
+        self.MATCHSCOPE_PRIVATE_API_TLS_CERT_FILE = os.getenv(
+            "MATCHSCOPE_PRIVATE_API_TLS_CERT_FILE", ""
+        ).strip()
+        self.MATCHSCOPE_PRIVATE_API_TLS_KEY_FILE = os.getenv(
+            "MATCHSCOPE_PRIVATE_API_TLS_KEY_FILE", ""
+        ).strip()
+
+        self.MATCHSCOPE_PUBLIC_API_ENABLED = self._parse_bool_env(
+            "MATCHSCOPE_PUBLIC_API_ENABLED", False
+        )
+        self.MATCHSCOPE_PUBLIC_API_HOST = os.getenv(
+            "MATCHSCOPE_PUBLIC_API_HOST", "0.0.0.0"
+        ).strip()
+        self.MATCHSCOPE_PUBLIC_API_PORT = self._parse_int_env(
+            "MATCHSCOPE_PUBLIC_API_PORT", 7654, min_value=1, max_value=65535
+        )
+        self.MATCHSCOPE_PUBLIC_API_PATH = self._parse_api_path(
+            "MATCHSCOPE_PUBLIC_API_PATH"
+        )
+        self.MATCHSCOPE_PUBLIC_BASE_URL = os.getenv(
+            "MATCHSCOPE_PUBLIC_BASE_URL", ""
+        ).strip().rstrip("/")
+        self.MATCHSCOPE_PUBLIC_RATE_LIMIT_PER_HOUR = self._parse_int_env(
+            "MATCHSCOPE_PUBLIC_RATE_LIMIT_PER_HOUR", 50, min_value=1
+        )
+        self.MATCHSCOPE_PUBLIC_API_TLS_CERT_FILE = os.getenv(
+            "MATCHSCOPE_PUBLIC_API_TLS_CERT_FILE", ""
+        ).strip()
+        self.MATCHSCOPE_PUBLIC_API_TLS_KEY_FILE = os.getenv(
+            "MATCHSCOPE_PUBLIC_API_TLS_KEY_FILE", ""
+        ).strip()
+        self.MATCHSCOPE_TOKEN_SIGNING_KEY = self._read_secret(
+            "MATCHSCOPE_TOKEN_SIGNING_KEY"
+        )
+        self.MATCHSCOPE_TOKEN_TTL_DAYS = self._parse_int_env(
+            "MATCHSCOPE_TOKEN_TTL_DAYS", 90, min_value=1, max_value=365
+        )
+        token_database = os.getenv("MATCHSCOPE_TOKEN_DATABASE", "").strip()
+        self.MATCHSCOPE_TOKEN_DATABASE = Path(token_database) if token_database else None
 
         # 性能与缓存配置
         self.DNS_CACHE_TTL = self._parse_int_env("DNS_CACHE_TTL", 60, min_value=0)
@@ -64,6 +125,8 @@ class Config:
             logger.warning(f"无效的 REQUIRED_GROUP_ID: {required_group_id_raw}")
         if self.REQUIRED_GROUP_ID and not self.GROUP_CHECK_ENABLED:
             logger.warning("群组验证已关闭：REQUIRED_GROUP_NAME 或 REQUIRED_GROUP_LINK 未配置")
+
+        self._validate_matchscope_config()
         
         # 群组工作模式配置（允许机器人在这些群组中直接响应 @提及）
         # 支持逗号分隔的多个群组 ID，例如：-1001234567890,-1009876543210
@@ -133,6 +196,74 @@ class Config:
         if not value:
             raise ValueError(f"Required environment variable {key} is not set")
         return value
+
+    def _read_secret(self, key: str) -> str:
+        """Read a secret from KEY or KEY_FILE without logging its value."""
+        value = os.getenv(key, "").strip()
+        file_path = os.getenv(f"{key}_FILE", "").strip()
+        if value and file_path:
+            raise ValueError(f"{key} and {key}_FILE cannot both be set")
+        if not file_path:
+            return value
+        try:
+            return Path(file_path).read_text(encoding="utf-8").strip()
+        except OSError as error:
+            raise ValueError(f"Unable to read {key}_FILE") from error
+
+    def _parse_bool_env(self, key: str, default: bool) -> bool:
+        raw = os.getenv(key, "").strip().lower()
+        if not raw:
+            return default
+        if raw in {"1", "true", "yes", "on"}:
+            return True
+        if raw in {"0", "false", "no", "off"}:
+            return False
+        raise ValueError(f"Invalid boolean value for {key}")
+
+    def _parse_api_path(self, key: str) -> str:
+        path = os.getenv(key, "").strip()
+        if not path:
+            return ""
+        if not re.fullmatch(r"/[A-Za-z0-9/_-]{12,200}", path):
+            raise ValueError(f"Invalid hidden API path for {key}")
+        return path
+
+    def _validate_matchscope_config(self) -> None:
+        if self.MATCHSCOPE_PRIVATE_API_ENABLED:
+            if not self.MATCHSCOPE_PRIVATE_API_PATH:
+                raise ValueError("MATCHSCOPE_PRIVATE_API_PATH is required")
+            if len(self.MATCHSCOPE_PRIVATE_API_TOKEN) < 32:
+                raise ValueError("MATCHSCOPE_PRIVATE_API_TOKEN must be at least 32 characters")
+        if self.MATCHSCOPE_PUBLIC_API_ENABLED:
+            if not self.MATCHSCOPE_PUBLIC_API_PATH:
+                raise ValueError("MATCHSCOPE_PUBLIC_API_PATH is required")
+            if len(self.MATCHSCOPE_TOKEN_SIGNING_KEY) < 32:
+                raise ValueError("MATCHSCOPE_TOKEN_SIGNING_KEY must be at least 32 characters")
+            parsed_base_url = urlparse(self.MATCHSCOPE_PUBLIC_BASE_URL)
+            if (
+                parsed_base_url.scheme not in {"http", "https"}
+                or not parsed_base_url.netloc
+                or parsed_base_url.username is not None
+                or parsed_base_url.password is not None
+                or parsed_base_url.query
+                or parsed_base_url.fragment
+                or parsed_base_url.path not in {"", "/"}
+            ):
+                raise ValueError("MATCHSCOPE_PUBLIC_BASE_URL must be an HTTP(S) origin")
+            if not self.GROUP_CHECK_ENABLED:
+                raise ValueError("Public MatchScope API requires group membership verification")
+        if (
+            self.MATCHSCOPE_PRIVATE_API_ENABLED
+            and self.MATCHSCOPE_PUBLIC_API_ENABLED
+            and self.MATCHSCOPE_PRIVATE_API_HOST == self.MATCHSCOPE_PUBLIC_API_HOST
+            and self.MATCHSCOPE_PRIVATE_API_PORT == self.MATCHSCOPE_PUBLIC_API_PORT
+        ):
+            raise ValueError("Private and public MatchScope APIs cannot share one listener")
+        for prefix in ("MATCHSCOPE_PRIVATE_API", "MATCHSCOPE_PUBLIC_API"):
+            certificate = getattr(self, f"{prefix}_TLS_CERT_FILE")
+            key = getattr(self, f"{prefix}_TLS_KEY_FILE")
+            if bool(certificate) != bool(key):
+                raise ValueError(f"{prefix}_TLS_CERT_FILE and TLS_KEY_FILE must be set together")
 
     def _parse_group_ids(self, ids_str: str) -> list:
         """解析群组 ID 列表

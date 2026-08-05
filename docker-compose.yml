@@ -3,6 +3,13 @@ services:
     image: aethersailor/rule-bot:latest
     container_name: rule-bot
     restart: unless-stopped
+    # MatchScope 接入默认关闭；启用后建议只发布到宿主机回环地址，再由反代或 Cloudflare Tunnel 暴露。
+    # ports:
+    #   - "127.0.0.1:8765:8765" # 私用入口
+    #   - "127.0.0.1:7654:7654" # 社区入口
+    # volumes:
+    #   - ./data:/app/data
+    #   - ./secrets:/run/secrets/rule-bot:ro
     environment:
       # ========== 请在下方填入您的配置 ==========
       # Telegram Bot Token (从 @BotFather 获取)
@@ -65,6 +72,31 @@ services:
       # 管理员可以强制添加被系统检测拒绝的域名
       # 留空则关闭此功能
       # - ADMIN_USER_IDS=123456789,987654321
+
+      # MatchScope 私用入口（可选，默认关闭）
+      # 路径应使用随机值；Token 建议保存在只读文件，不要直接写入 Compose。
+      # - MATCHSCOPE_PRIVATE_API_ENABLED=true
+      # - MATCHSCOPE_PRIVATE_API_PORT=8765
+      # - MATCHSCOPE_PRIVATE_API_PATH=/api/v1/matchscope/replace-with-random-path
+      # - MATCHSCOPE_PRIVATE_API_TOKEN_FILE=/run/secrets/rule-bot/private-token
+      # - MATCHSCOPE_PRIVATE_RATE_LIMIT_PER_HOUR=1000
+
+      # MatchScope 社区入口（可选，默认关闭）
+      # 开启后用户可在机器人私聊菜单自行签发、更新和吊销独立 Token。
+      # 必须同时启用上方 REQUIRED_GROUP_*，并持久化 /app/data。
+      # - MATCHSCOPE_PUBLIC_API_ENABLED=true
+      # - MATCHSCOPE_PUBLIC_API_PORT=7654
+      # - MATCHSCOPE_PUBLIC_API_PATH=/api/v1/matchscope/replace-with-another-random-path
+      # - MATCHSCOPE_PUBLIC_BASE_URL=https://rule-bot.example.com
+      # - MATCHSCOPE_TOKEN_SIGNING_KEY_FILE=/run/secrets/rule-bot/signing-key
+      # - MATCHSCOPE_TOKEN_TTL_DAYS=90
+      # - MATCHSCOPE_PUBLIC_RATE_LIMIT_PER_HOUR=50
+
+      # 可选：直接由 Rule-Bot 终止 TLS。使用反代或 Cloudflare Tunnel 时无需配置。
+      # - MATCHSCOPE_PRIVATE_API_TLS_CERT_FILE=/run/secrets/rule-bot/private.crt
+      # - MATCHSCOPE_PRIVATE_API_TLS_KEY_FILE=/run/secrets/rule-bot/private.key
+      # - MATCHSCOPE_PUBLIC_API_TLS_CERT_FILE=/run/secrets/rule-bot/public.crt
+      # - MATCHSCOPE_PUBLIC_API_TLS_KEY_FILE=/run/secrets/rule-bot/public.key
       # ========================================
 
       # ========== 系统配置 ==========

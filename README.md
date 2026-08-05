@@ -123,6 +123,21 @@ docker compose logs -f rule-bot
 | `ALLOWED_GROUP_IDS` | 群组模式允许的群组 ID，逗号分隔 | 空 |
 | `ANNOUNCEMENT_GROUP_ID` | 私聊成功提交后的群组播报目标 ID | 空 |
 | `ADMIN_USER_IDS` | 管理员 Telegram 用户 ID，逗号分隔 | 空 |
+| `MATCHSCOPE_PRIVATE_API_ENABLED` | 启用 MatchScope 私用入口 | `false` |
+| `MATCHSCOPE_PRIVATE_API_HOST` | 私用入口监听地址 | `0.0.0.0` |
+| `MATCHSCOPE_PRIVATE_API_PORT` | 私用入口端口 | `8765` |
+| `MATCHSCOPE_PRIVATE_API_PATH` | 私用入口随机路径（启用时必需） | 空 |
+| `MATCHSCOPE_PRIVATE_API_TOKEN[_FILE]` | 私用入口静态 Token 或其文件 | 空 |
+| `MATCHSCOPE_PRIVATE_RATE_LIMIT_PER_HOUR` | 私用入口每小时请求/添加上限 | `1000` |
+| `MATCHSCOPE_PUBLIC_API_ENABLED` | 启用 MatchScope 社区入口 | `false` |
+| `MATCHSCOPE_PUBLIC_API_HOST` | 社区入口监听地址 | `0.0.0.0` |
+| `MATCHSCOPE_PUBLIC_API_PORT` | 社区入口端口 | `7654` |
+| `MATCHSCOPE_PUBLIC_API_PATH` | 社区入口随机路径（启用时必需） | 空 |
+| `MATCHSCOPE_PUBLIC_BASE_URL` | 机器人展示给用户的公开基础 URL | 空 |
+| `MATCHSCOPE_TOKEN_SIGNING_KEY[_FILE]` | 社区 Token HMAC 签名密钥或其文件 | 空 |
+| `MATCHSCOPE_TOKEN_TTL_DAYS` | 社区 Token 有效天数 | `90` |
+| `MATCHSCOPE_TOKEN_DATABASE` | 社区 Token 状态数据库路径 | 数据目录下 `matchscope_tokens.sqlite3` |
+| `MATCHSCOPE_PUBLIC_RATE_LIMIT_PER_HOUR` | 每个社区 Token 每小时请求/添加上限 | `50` |
 | `TZ` | 时区 | `Asia/Shanghai` |
 | `DNS_CACHE_TTL` | DNS A 记录缓存秒数 | `60` |
 | `DNS_CACHE_SIZE` | DNS A 记录缓存上限 | `1024` |
@@ -187,6 +202,36 @@ docker compose logs -f rule-bot
 
 > 通过 @userinfobot 获取你的 Telegram 用户 ID。
 
+### MatchScope 接入
+
+两个入口互相独立，且都默认关闭，因此旧部署不增加任何参数即可平滑升级：
+
+- `8765` 私用入口使用部署者生成的高强度静态 Token，适合自己的 MatchScope。
+- `7654` 社区入口使用 Rule-Bot 签发的用户 Token。群成员在机器人私聊主菜单点击“MatchScope 接入”即可自行申请、重新签发或吊销，管理员无需维护用户 Token 清单。
+
+两个入口都只接受精确随机路径上的 `POST application/json`，请求格式固定为：
+
+```json
+{"version":1,"domain":"example.com"}
+```
+
+鉴权使用 `Authorization: Bearer <token>`。随机路径只用于降低扫描噪声，Token 才是真正的安全边界；入口没有首页、接口文档、健康检查或 CORS。Rule-Bot 会忽略客户端提供的来源、文件路径或提交信息，并让域名经过与 Telegram 添加相同的规范化、`.cn`、规则重复、GeoSite、DNS/NS 和归属地校验。
+
+社区入口必须同时配置 `REQUIRED_GROUP_ID/NAME/LINK`。申请或重新签发时会实时检查群成员身份；重新签发立即废止旧 Token，吊销也会立即生效。签发状态保存在 `MATCHSCOPE_TOKEN_DATABASE`（默认 `/app/data/matchscope_tokens.sqlite3`），原始 Token 不入库，因此启用社区入口时必须持久化 `/app/data`。
+
+建议将端口只绑定到宿主机回环地址：
+
+```yaml
+ports:
+  - "127.0.0.1:8765:8765"
+  - "127.0.0.1:7654:7654"
+volumes:
+  - ./data:/app/data
+  - ./secrets:/run/secrets/rule-bot:ro
+```
+
+随后可让两个 Cloudflare Tunnel hostname 分别指向 `http://127.0.0.1:8765` 与 `http://127.0.0.1:7654`，从而绑定不同域名并在公网侧使用 HTTPS。若不使用反代，也可成对配置各入口的 `*_TLS_CERT_FILE` 与 `*_TLS_KEY_FILE`，由 Rule-Bot 直接提供最基础的 TLS 1.2+ 服务。
+
 ## 📌 规则逻辑（简版）
 
 1) 解析域名并提取二级域名  
@@ -200,7 +245,7 @@ docker compose logs -f rule-bot
 
 - `latest`：唯一发布标签，对应 `master` 分支通过测试后的多架构镜像
 
-镜像内置事件循环心跳健康检查；部署者不需要增加端口、环境变量或额外配置。
+镜像内置事件循环心跳健康检查。未启用 MatchScope 接入时，部署者不需要增加端口、环境变量或额外配置。
 
 ## 🧩 常见问题
 

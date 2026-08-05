@@ -37,14 +37,17 @@ class GroupService:
             text = text.replace(char, f'\\{char}')
         return text
     
-    async def check_user_in_group(self, user_id: int) -> Optional[bool]:
+    async def check_user_in_group(
+        self, user_id: int, *, force_refresh: bool = False
+    ) -> Optional[bool]:
         """检查用户是否在指定群组中"""
         if not self._group_check_enabled:
             return True  # 功能关闭时默认通过
 
-        cached = self._membership_cache.get(user_id)
-        if cached is not None:
-            return cached
+        if not force_refresh:
+            cached = self._membership_cache.get(user_id)
+            if cached is not None:
+                return cached
         
         try:
             chat_member = await self.bot.get_chat_member(

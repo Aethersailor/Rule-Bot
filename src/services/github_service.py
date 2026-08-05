@@ -54,6 +54,7 @@ class GitHubService:
         return " / date: " in normalized and (
             "add by telegram user:" in normalized
             or "force add by admin:" in normalized
+            or "add by matchscope" in normalized
         )
 
     def _target_branch(self) -> Optional[str]:
@@ -263,6 +264,7 @@ class GitHubService:
         description: str = "",
         file_path: str = None,
         force_add: bool = False,
+        source: str = "telegram",
     ) -> Dict[str, Any]:
         """Serialize repository writes and make duplicate callbacks idempotent."""
         async with self._write_lock:
@@ -272,6 +274,7 @@ class GitHubService:
                 description,
                 file_path,
                 force_add,
+                source,
             )
 
     async def _add_domain_to_rules_unlocked(
@@ -280,7 +283,8 @@ class GitHubService:
         user_name: str,
         description: str = "",
         file_path: str = None,
-        force_add: bool = False
+        force_add: bool = False,
+        source: str = "telegram",
     ) -> Dict[str, Any]:
         """添加域名到规则文件"""
         try:
@@ -290,6 +294,13 @@ class GitHubService:
             domain = normalized_domain
             user_name = sanitize_identity(user_name)
             description = validate_single_line_text(description, 20)
+            allowed_sources = {
+                "telegram",
+                "matchscope_private",
+                "matchscope_community",
+            }
+            if source not in allowed_sources:
+                return {"success": False, "error": "无效的规则提交来源"}
 
             if not file_path:
                 file_path = self.config.DIRECT_RULE_FILE
@@ -356,6 +367,10 @@ class GitHubService:
                             comment = f"# {description} / force add by Admin: {user_name} / Date: {current_date}"
                         else:
                             comment = f"# force add by Admin: {user_name} / Date: {current_date}"
+                    elif source == "matchscope_private":
+                        comment = f"# add by MatchScope / Date: {current_date}"
+                    elif source == "matchscope_community":
+                        comment = f"# add by MatchScope Community / Date: {current_date}"
                     else:
                         if description:
                             comment = f"# {description} / add by Telegram user: {user_name} / Date: {current_date}"
@@ -377,6 +392,16 @@ class GitHubService:
                             f"feat(rules): force add direct domain {domain} by Admin "
                             f"(Telegram user: {user_name})"
                         )
+                    elif source == "matchscope_private":
+                        commit_title = (
+                            f"feat(rules): add direct domain {domain} by Rule-Bot "
+                            "(from MatchScope)"
+                        )
+                    elif source == "matchscope_community":
+                        commit_title = (
+                            f"feat(rules): add direct domain {domain} by Rule-Bot "
+                            "(from MatchScope Community)"
+                        )
                     else:
                         commit_title = f"feat(rules): add direct domain {domain} by Telegram Bot (Telegram user: {user_name})"
                     commit_body = description if description else ""
@@ -389,7 +414,11 @@ class GitHubService:
                 result, error = await asyncio.to_thread(_prepare_update)
                 if error:
                     logger.error(error)
-                    return {"success": False, "error": error}
+                    return {
+                        "success": False,
+                        "already_exists": error.startswith("域名已存在于规则文件中:"),
+                        "error": error,
+                    }
 
                 new_content, full_commit_message = result
                 

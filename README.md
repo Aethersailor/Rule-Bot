@@ -217,7 +217,7 @@ docker compose logs -f rule-bot
 
 鉴权使用 `Authorization: Bearer <token>`。随机路径只用于降低扫描噪声，Token 才是真正的安全边界；入口没有首页、接口文档、健康检查或 CORS。Rule-Bot 会忽略客户端提供的来源、文件路径或提交信息，并让域名经过与 Telegram 添加相同的规范化、`.cn`、规则重复、GeoSite、DNS/NS 和归属地校验。
 
-社区入口必须同时配置 `REQUIRED_GROUP_ID/NAME/LINK`。申请或重新签发时会实时检查群成员身份；重新签发立即废止旧 Token，吊销也会立即生效。签发状态保存在 `MATCHSCOPE_TOKEN_DATABASE`（默认 `/app/data/matchscope_tokens.sqlite3`），原始 Token 不入库，因此启用社区入口时必须持久化 `/app/data`。
+社区入口必须同时配置 `REQUIRED_GROUP_ID/NAME/LINK`。申请或重新签发时会实时检查群成员身份；重新签发立即废止旧 Token，吊销也会立即生效。签发状态保存在 `MATCHSCOPE_TOKEN_DATABASE`（默认 `/app/data/matchscope_tokens.sqlite3`），原始 Token 不入库，因此启用社区入口时必须持久化 `/app/data`。Token 数据库会自动收紧为 `0600`；宿主机上的持久化目录也应设为 `0700`。
 
 建议将端口只绑定到宿主机回环地址：
 

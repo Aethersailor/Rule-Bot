@@ -2,6 +2,8 @@ import tempfile
 import unittest
 import base64
 import json
+import os
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -15,6 +17,14 @@ from src.services.matchscope_token_service import MatchScopeTokenService
 
 
 class TestMatchScopeTokens(unittest.IsolatedAsyncioTestCase):
+    async def test_database_is_private(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "tokens.sqlite3"
+            MatchScopeTokenService(database_path, "s" * 32, 90)
+
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(database_path.stat().st_mode), 0o600)
+
     async def test_reissue_and_revoke_invalidate_old_tokens(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             service = MatchScopeTokenService(

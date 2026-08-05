@@ -57,6 +57,7 @@ class MatchScopeTokenService:
                 )
                 """
             )
+        self.database_path.chmod(0o600)
 
     async def issue(self, user_id: int) -> dict:
         now = int(time.time())

@@ -1,0 +1,43 @@
+name: Classify Dependabot Updates
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  classify:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v3
+        with:
+          github-token: ${{ github.token }}
+
+      - name: Allow only minor and patch automatic merges
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          label="dependabot-automerge"
+          gh label create "$label" --repo "$GH_REPO" --force \
+            --color "0e8a16" \
+            --description "Minor or patch Dependabot update eligible for automatic merge"
+          case "$UPDATE_TYPE" in
+            version-update:semver-minor|version-update:semver-patch)
+              gh pr edit "$PR_URL" --add-label "$label"
+              ;;
+            *)
+              gh pr edit "$PR_URL" --remove-label "$label" || true
+              ;;
+          esac

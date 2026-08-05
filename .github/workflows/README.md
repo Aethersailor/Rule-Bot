@@ -9,4 +9,4 @@
 
 发布完成后会验证 amd64/arm64 manifest 中的 `org.opencontainers.image.revision` 都等于本次提交。不可变 SHA 标签保留作回滚证据；部署者仍只需使用 `aethersailor/rule-bot:latest`，现有 Compose 和更新方式不变。
 
-Dependabot 更新按周分组。只有 PR 的完整验证工作流成功后才会自动合并，并显式触发一次 `master` 发布，避免 `GITHUB_TOKEN` 合并事件不触发后续工作流的问题。
+Dependabot 更新按周处理，运行依赖和开发工具分别分组，minor/patch 可在完整验证成功后自动合并；major 更新保持独立 PR 且不自动合并。自动合并后会显式触发一次 `master` 发布，避免 `GITHUB_TOKEN` 合并事件不触发后续工作流的问题。

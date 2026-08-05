@@ -19,7 +19,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: Check automatic merge policy
+        id: policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+        run: |
+          set -euo pipefail
+          test -n "$PR_NUMBER"
+          eligible="$(gh pr view "$PR_NUMBER" --repo "$GH_REPO" \
+            --json labels --jq 'any(.labels[]; .name == "dependabot-automerge")')"
+          echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
+
       - name: Merge the validated update and publish master
+        if: steps.policy.outputs.eligible == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

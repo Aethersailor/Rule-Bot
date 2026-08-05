@@ -52,15 +52,6 @@ class Config:
         self.GITHUB_FILE_CACHE_TTL = self._parse_int_env("GITHUB_FILE_CACHE_TTL", 60, min_value=0)
         self.GITHUB_FILE_CACHE_SIZE = self._parse_int_env("GITHUB_FILE_CACHE_SIZE", 4, min_value=0)
 
-        # Metrics 配置
-        self.METRICS_ENABLED = self._parse_bool_env("METRICS_ENABLED", False)
-        self.METRICS_EXPORT_PATH = os.getenv("METRICS_EXPORT_PATH", "/tmp/rule-bot-metrics.json")
-        self.METRICS_EXPORT_INTERVAL = self._parse_int_env("METRICS_EXPORT_INTERVAL", 30, min_value=1)
-        self.METRICS_RESET_ON_EXPORT = self._parse_bool_env("METRICS_RESET_ON_EXPORT", False)
-
-        # 内存修剪（glibc malloc_trim）
-        self.MEMORY_TRIM_ENABLED = self._parse_bool_env("MEMORY_TRIM_ENABLED", True)
-        
         # 群组验证配置（用于私聊模式下验证用户是否在群组中）
         required_group_id_raw = os.getenv("REQUIRED_GROUP_ID", "").strip()
         self.REQUIRED_GROUP_NAME = os.getenv("REQUIRED_GROUP_NAME", "").strip()
@@ -142,7 +133,7 @@ class Config:
         if not value:
             raise ValueError(f"Required environment variable {key} is not set")
         return value
-    
+
     def _parse_group_ids(self, ids_str: str) -> list:
         """解析群组 ID 列表
         
@@ -261,9 +252,3 @@ class Config:
             logger.warning(f"{key} 大于最大值 {max_value}，使用默认值 {default}")
             return default
         return value
-
-    def _parse_bool_env(self, key: str, default: bool = False) -> bool:
-        raw = os.getenv(key, "").strip().lower()
-        if not raw:
-            return default
-        return raw in ("1", "true", "yes", "on")

@@ -139,60 +139,6 @@ class GitHubService:
         except Exception as e:
             logger.error(f"连接 GitHub 仓库失败: {e}")
     
-    def test_connection(self) -> Dict[str, Any]:
-        """测试 GitHub 连接和权限"""
-        try:
-            # 测试基本连接
-            user = self.github.get_user()
-            logger.info(f"GitHub 连接测试成功，用户: {user.login}")
-            
-            # 测试仓库访问
-            if not self.repo:
-                return {"success": False, "error": "仓库连接未初始化"}
-            
-            repo_info = {
-                "name": self.repo.name,
-                "full_name": self.repo.full_name,
-                "private": self.repo.private,
-                "permissions": {
-                    "admin": self.repo.permissions.admin,
-                    "push": self.repo.permissions.push,
-                    "pull": self.repo.permissions.pull
-                }
-            }
-            logger.info(f"仓库访问测试成功: {repo_info}")
-            
-            # 测试文件访问
-            try:
-                self.repo.get_contents(
-                    self.config.DIRECT_RULE_FILE,
-                    **self._get_contents_kwargs()
-                )
-                logger.info(f"规则文件访问测试成功: {self.config.DIRECT_RULE_FILE}")
-                return {
-                    "success": True,
-                    "user": user.login,
-                    "repo": repo_info,
-                    "file_accessible": True,
-                    "target_branch": self._target_branch() or self.repo.default_branch
-                }
-            except Exception as file_error:
-                logger.warning(f"规则文件访问失败: {file_error}")
-                return {
-                    "success": False,
-                    "user": user.login,
-                    "repo": repo_info,
-                    "file_accessible": False,
-                    "file_error": str(file_error)
-                }
-                
-        except Exception as e:
-            logger.error(f"GitHub 连接测试失败: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
-    
     async def get_rule_file_content(self, file_path: str, use_cache: bool = True) -> Optional[str]:
         """获取规则文件内容"""
         try:

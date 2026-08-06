@@ -89,6 +89,34 @@ MatchScope 可以把实际流量中捕获的域名提交给 Rule-Bot。API 只�
 
 随机 API 路径用于减少扫描噪声，不能代替 Token。建议只把两个端口发布到宿主机回环地址，再通过反向代理或 Cloudflare Tunnel 提供 HTTPS；不要把私用和社区入口合并成同一个端口、路径或共享凭据。公共 Cloudflare 主机还应使用按主机名限定的 Request Header Transform Rule 移除 `CF-Connecting-IP`、`X-Forwarded-For` 和 `True-Client-IP`，避免客户端 IP 继续进入源站；这不会阻止 Cloudflare 自身看到网络元数据。
 
+#### 隐私边界与必要警告
+
+> [!WARNING]
+> MatchScope 可能观察家庭、组织或共享网络中多个设备的连接域名。私用入口部署者和社区 Token 申请人必须确认自己有权收集并提交这些数据；Telegram 中的隐私同意只代表 Token 申请人，不代表其他网络用户或设备已经同意。
+
+Rule-Bot 的服务端边界如下：
+
+| 数据类别 | Rule-Bot 的处理 | 不会做的事 |
+| --- | --- | --- |
+| API 请求 | 只接受 `version` 和 `domain`，随后规范化并缩减为用于规则判断的域名 | 不接受客户端指定仓库、规则文件、提交身份、说明、来源或强制添加 |
+| HTTP 与业务日志 | 关闭 MatchScope HTTP access log；业务事件使用每次进程启动时随机生成的短引用，不记录原始域名 | 不读取或保存客户端 IP，不把原始请求域名写入业务日志 |
+| 限流状态 | 在进程内短期保存按私用入口或社区随机主体分组的请求时间，用于滚动限流 | 不把请求时间、次数、域名或 IP 持久化到数据库 |
+| 社区 Token 数据库 | 保存 Telegram 用户 ID、随机 Token 主体、版本、签发/到期/启用状态，以及隐私说明版本和同意时间 | 不保存原始 Token、请求域名、客户端 IP 或最后使用时间 |
+| GitHub 提交 | 成功添加后公开规则域名、MatchScope/MatchScope Community 来源标识和提交时间 | 不公开 Telegram 用户 ID、Token、客户端 IP 或 MatchScope 实例名 |
+
+还必须理解以下限制：
+
+- MatchScope 官方客户端默认先将完整子域缩减为可注册域名，并在本地排除 `.cn`、用户排除项和重复主域；但协议允许客户端提交一个完整主机名，Rule-Bot 无法保证所有第三方客户端都执行了相同的本地隐私策略。Rule-Bot 会在内存中规范化后再处理，不会为失败、拒绝或重复请求建立域名数据库记录。
+- 私用入口采用一个部署者静态 Token，没有社区入口的逐用户身份、同意、续签和吊销边界。任何获得该 Token 的人都可在轮换前使用私用入口，因此绝不能把它共享给社区用户。
+- 社区 Token 是 Bearer 凭据：获得 Token 即可在过期或吊销前代表对应随机主体提交请求。Token 内只有不透明随机主体，不包含 Telegram 用户 ID；服务端数据库才保存二者映射。Token 只显示一次，应写入 MatchScope 的独立只读凭据文件；不要放入仓库、聊天记录、URL 查询参数或公开日志。
+- 隐私说明升级后，既有社区 Token 会暂停；重新确认只恢复后续使用。撤回同意会吊销 Token，但不会删除 MatchScope 客户端本地保存的域名，也不能撤回已经进入 GitHub 历史的规则。
+- HTTPS 保护传输，但不代替鉴权。隐藏路径不是密码。Cloudflare、反向代理或其他终止 TLS 的中间服务在技术上能够处理出口 IP、时间、请求路径、Authorization 头和域名正文；移除转发 IP 头只能避免源站继续收到这些头，不能让数据对 Cloudflare 不可见。
+- Rule-Bot 的 DNS、NS 和 GeoIP 判断会把用于规则检查的域名交给配置的 DNS/DoH 服务；相应提供方可能看到查询域名。成功添加后，GitHub 仓库和 commit 历史是公开、持久的披露面，不能按临时私密数据处理。
+- 私用和社区 MatchScope API 提交都不会触发 `ANNOUNCEMENT_GROUP_ID` 的 Telegram 群组播报；该播报只用于 Telegram 私聊成功提交。MatchScope 成功结果的公开面是目标 GitHub 规则及其提交历史。
+- 如果不能接受第三方入口、DNS 提供方或公开 GitHub 历史的边界，应保持 MatchScope `rule_bot.enabled=false`，只在本地保存；也可以使用自管反向代理、直接 TLS 或受保护专网减少中间信任方。
+
+完整服务端说明见 [PRIVACY.md](PRIVACY.md)，MatchScope 客户端的本地文件、主域缩减、排除项、代理和可靠投递边界见 [MatchScope 隐私说明](https://github.com/Aethersailor/MatchScope/blob/master/PRIVACY.md)。
+
 ## Docker 部署
 
 推荐使用 Docker Compose。开始前需要准备：

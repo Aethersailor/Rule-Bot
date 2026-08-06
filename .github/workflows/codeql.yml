@@ -5,6 +5,8 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  schedule:
+    - cron: "30 20 * * 0"
   workflow_dispatch:
 
 concurrency:
@@ -26,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [python]
+        language: [actions, python]
 
     steps:
       - name: Checkout repository

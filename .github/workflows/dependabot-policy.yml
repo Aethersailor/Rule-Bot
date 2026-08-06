@@ -1,13 +1,13 @@
 name: Classify Dependabot Updates
 
 on:
-  pull_request_target:
+  pull_request:
+    branches: [master]
     types: [opened, reopened, synchronize]
 
 permissions:
   contents: read
-  issues: write
-  pull-requests: write
+  pull-requests: read
 
 jobs:
   classify:
@@ -20,24 +20,39 @@ jobs:
         with:
           github-token: ${{ github.token }}
 
-      - name: Allow only minor and patch automatic merges
+      - name: Write immutable policy evidence
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
           UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          DEPENDENCY_NAMES: ${{ steps.metadata.outputs.dependency-names }}
+          MAINTAINER_CHANGES: ${{ steps.metadata.outputs.maintainer-changes }}
         shell: bash
         run: |
           set -euo pipefail
-          label="dependabot-automerge"
-          gh label create "$label" --repo "$GH_REPO" --force \
-            --color "0e8a16" \
-            --description "Minor or patch Dependabot update eligible for automatic merge"
-          case "$UPDATE_TYPE" in
-            version-update:semver-minor|version-update:semver-patch)
-              gh pr edit "$PR_URL" --add-label "$label"
-              ;;
-            *)
-              gh pr edit "$PR_URL" --remove-label "$label" || true
-              ;;
-          esac
+          policy_dir="$RUNNER_TEMP/dependabot-policy"
+          mkdir -p "$policy_dir"
+          jq -n \
+            --arg pr_number "$PR_NUMBER" \
+            --arg head_sha "$PR_HEAD_SHA" \
+            --arg base_ref "$PR_BASE_REF" \
+            --arg update_type "$UPDATE_TYPE" \
+            --arg dependency_names "$DEPENDENCY_NAMES" \
+            --arg maintainer_changes "$MAINTAINER_CHANGES" \
+            '{
+              pr_number: ($pr_number | tonumber),
+              head_sha: $head_sha,
+              base_ref: $base_ref,
+              update_type: $update_type,
+              dependency_names: $dependency_names,
+              maintainer_changes: ($maintainer_changes == "true")
+            }' > "$policy_dir/policy.json"
+
+      - name: Upload policy evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependabot-policy-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/dependabot-policy/policy.json
+          if-no-files-found: error
+          retention-days: 1

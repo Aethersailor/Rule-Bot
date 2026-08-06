@@ -2,12 +2,18 @@ name: Auto-merge Dependabot PRs
 
 on:
   workflow_run:
-    workflows: [Build and Push Docker Image]
+    workflows: [Classify Dependabot Updates]
     types: [completed]
+
+concurrency:
+  group: dependabot-auto-merge-${{ github.repository }}
+  cancel-in-progress: false
 
 permissions:
   actions: write
+  checks: read
   contents: write
+  issues: write
   pull-requests: write
 
 jobs:
@@ -17,30 +23,268 @@ jobs:
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.actor.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     steps:
-      - name: Check automatic merge policy
+      - name: Download unprivileged policy evidence
+        uses: actions/download-artifact@v5
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/dependabot-policy
+
+      - name: Validate policy evidence
         id: policy
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          EVENT_PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          EVENT_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          POLICY_ROOT: ${{ runner.temp }}/dependabot-policy
+        shell: bash
         run: |
           set -euo pipefail
-          test -n "$PR_NUMBER"
-          eligible="$(gh pr view "$PR_NUMBER" --repo "$GH_REPO" \
-            --json labels --jq 'any(.labels[]; .name == "dependabot-automerge")')"
+          mapfile -d '' policy_files < <(find "$POLICY_ROOT" -type f -name policy.json -print0)
+          test "${#policy_files[@]}" -eq 1
+          policy_file="${policy_files[0]}"
+
+          jq -e \
+            --argjson pr_number "$EVENT_PR_NUMBER" \
+            --arg head_sha "$EVENT_HEAD_SHA" '
+              .pr_number == $pr_number
+              and .head_sha == $head_sha
+              and .base_ref == "master"
+              and (.maintainer_changes == false)
+              and (.dependency_names | type == "string" and length > 0)
+            ' "$policy_file" >/dev/null
+
+          update_type="$(jq -er '.update_type' "$policy_file")"
+          case "$update_type" in
+            version-update:semver-minor|version-update:semver-patch)
+              eligible=true
+              ;;
+            *)
+              eligible=false
+              ;;
+          esac
+
+          echo "pr_number=$EVENT_PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$EVENT_HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "update_type=$update_type" >> "$GITHUB_OUTPUT"
           echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
 
-      - name: Merge the validated update and publish master
-        if: steps.policy.outputs.eligible == 'true'
+      - name: Revalidate the live pull request
+        id: live
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          PR_NUMBER: ${{ steps.policy.outputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ steps.policy.outputs.head_sha }}
+        shell: bash
         run: |
           set -euo pipefail
-          test -n "$PR_NUMBER"
-          gh pr checks "$PR_NUMBER" --watch --fail-fast --repo "$GH_REPO"
-          gh pr merge "$PR_NUMBER" --squash --delete-branch --repo "$GH_REPO"
+          pr="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")"
+          jq -e \
+            --arg expected_head "$EXPECTED_HEAD_SHA" '
+              .state == "open"
+              and (.draft | not)
+              and .user.login == "dependabot[bot]"
+              and .base.ref == "master"
+              and .head.sha == $expected_head
+            ' <<<"$pr" >/dev/null
+
+          commits="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER/commits?per_page=100")"
+          jq -e '
+            length > 0
+            and all(.[]; .author.login == "dependabot[bot]")
+            and all(.[]; .commit.verification.verified == true)
+          ' <<<"$commits" >/dev/null
+
+          master_sha="$(gh api "repos/$GH_REPO/git/ref/heads/master" --jq '.object.sha')"
+          base_sha="$(jq -er '.base.sha' <<<"$pr")"
+          current=false
+          if [[ "$base_sha" == "$master_sha" ]]; then
+            current=true
+          else
+            echo "PR #$PR_NUMBER is based on $base_sha; waiting for Dependabot to rebase onto $master_sha"
+          fi
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+
+      - name: Reconcile automatic merge label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.policy.outputs.pr_number }}
+          ELIGIBLE: ${{ steps.policy.outputs.eligible }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          label="dependabot-automerge"
+          gh label create "$label" --repo "$GH_REPO" --force \
+            --color "0e8a16" \
+            --description "Minor or patch Dependabot update eligible for automatic merge"
+          if [[ "$ELIGIBLE" == true ]]; then
+            gh pr edit "$PR_NUMBER" --repo "$GH_REPO" --add-label "$label"
+          else
+            gh pr edit "$PR_NUMBER" --repo "$GH_REPO" --remove-label "$label" || true
+          fi
+
+      - name: Wait for the exact required checks
+        if: steps.policy.outputs.eligible == 'true' && steps.live.outputs.current == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.policy.outputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ steps.policy.outputs.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            "classify"
+            "validate"
+            "build-and-push"
+            "analyze (actions)"
+            "analyze (python)"
+            "CodeQL"
+          )
+          ready=false
+          for attempt in {1..120}; do
+            check_runs="$(gh api \
+              "repos/$GH_REPO/commits/$EXPECTED_HEAD_SHA/check-runs?per_page=100")"
+            latest="$(jq '
+              .check_runs
+              | group_by(.name)
+              | map(max_by(.started_at))
+            ' <<<"$check_runs")"
+
+            failed="$(jq -r '
+              .[]
+              | select(
+                  .status == "completed"
+                  and (.conclusion | IN("failure", "cancelled", "timed_out", "action_required", "stale"))
+                )
+              | .name
+            ' <<<"$latest")"
+            if [[ -n "$failed" ]]; then
+              echo "failing checks for $EXPECTED_HEAD_SHA:" >&2
+              echo "$failed" >&2
+              exit 1
+            fi
+
+            missing=()
+            for name in "${required[@]}"; do
+              if ! jq -e --arg name "$name" '
+                any(.[];
+                  .name == $name
+                  and .status == "completed"
+                  and .conclusion == "success"
+                )
+              ' <<<"$latest" >/dev/null; then
+                missing+=("$name")
+              fi
+            done
+            if [[ "${#missing[@]}" -eq 0 ]]; then
+              ready=true
+              break
+            fi
+            echo "waiting for checks: ${missing[*]}"
+            sleep 15
+          done
+          [[ "$ready" == true ]]
+          gh pr checks "$PR_NUMBER" --repo "$GH_REPO" --watch --fail-fast
+
+      - name: Merge the exact validated revision
+        id: merge
+        if: steps.policy.outputs.eligible == 'true' && steps.live.outputs.current == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.policy.outputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ steps.policy.outputs.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")"
+          master_sha="$(gh api "repos/$GH_REPO/git/ref/heads/master" --jq '.object.sha')"
+          jq -e \
+            --arg expected_head "$EXPECTED_HEAD_SHA" \
+            --arg expected_base "$master_sha" '
+              .state == "open"
+              and .user.login == "dependabot[bot]"
+              and .head.sha == $expected_head
+              and .base.sha == $expected_base
+              and .mergeable == true
+            ' <<<"$pr" >/dev/null
+
+          gh pr merge "$PR_NUMBER" --repo "$GH_REPO" --merge --delete-branch
+          merged="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")"
+          jq -e '.merged == true and .merge_commit_sha != null' <<<"$merged" >/dev/null
+          merged_sha="$(jq -er '.merge_commit_sha' <<<"$merged")"
+          echo "merged_sha=$merged_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch post-merge publication and CodeQL
+        id: dispatch
+        if: steps.merge.outputs.merged_sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          dispatched_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           gh workflow run docker-build.yml --ref master --repo "$GH_REPO"
+          gh workflow run codeql.yml --ref master --repo "$GH_REPO"
+          echo "dispatched_at=$dispatched_at" >> "$GITHUB_OUTPUT"
+
+      - name: Verify post-merge workflows
+        if: steps.merge.outputs.merged_sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          MERGED_SHA: ${{ steps.merge.outputs.merged_sha }}
+          DISPATCHED_AT: ${{ steps.dispatch.outputs.dispatched_at }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          find_run() {
+            local workflow="$1"
+            gh api \
+              "repos/$GH_REPO/actions/workflows/$workflow/runs?event=workflow_dispatch&branch=master&per_page=20" \
+              | jq -r \
+                --arg sha "$MERGED_SHA" \
+                --arg dispatched_at "$DISPATCHED_AT" '
+                  [
+                    .workflow_runs[]
+                    | select(
+                        .head_sha == $sha
+                        and .created_at >= $dispatched_at
+                      )
+                  ]
+                  | sort_by(.created_at)
+                  | last
+                  | .id // empty
+                '
+          }
+
+          docker_run=""
+          codeql_run=""
+          for attempt in {1..24}; do
+            [[ -n "$docker_run" ]] || docker_run="$(find_run docker-build.yml)"
+            [[ -n "$codeql_run" ]] || codeql_run="$(find_run codeql.yml)"
+            if [[ -n "$docker_run" && -n "$codeql_run" ]]; then
+              break
+            fi
+            sleep 5
+          done
+          test -n "$docker_run"
+          test -n "$codeql_run"
+
+          gh run watch "$docker_run" --repo "$GH_REPO" --exit-status
+          gh run watch "$codeql_run" --repo "$GH_REPO" --exit-status
+          for run_id in "$docker_run" "$codeql_run"; do
+            gh run view "$run_id" --repo "$GH_REPO" \
+              --json event,headSha,conclusion \
+              | jq -e \
+                --arg sha "$MERGED_SHA" '
+                  .event == "workflow_dispatch"
+                  and .headSha == $sha
+                  and .conclusion == "success"
+                ' >/dev/null
+          done

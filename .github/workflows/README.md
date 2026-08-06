@@ -9,4 +9,6 @@
 
 发布完成后会验证 amd64/arm64 manifest 中的 `org.opencontainers.image.revision` 都等于本次提交。不可变 SHA 标签保留作回滚证据；部署者仍只需使用 `aethersailor/rule-bot:latest`，现有 Compose 和更新方式不变。
 
-Dependabot 更新按周处理，运行依赖和开发工具分别分组，minor/patch 可在完整验证成功后自动合并；major 更新保持独立 PR 且不自动合并。自动合并后会显式触发一次 `master` 发布，避免 `GITHUB_TOKEN` 合并事件不触发后续工作流的问题。
+Dependabot 更新按周处理，运行依赖和开发工具分别分组。PR 侧的只读工作流只提取并固化 Dependabot 元数据；默认分支上的独立特权工作流会复核 PR 作者、签名、head/base SHA、升级等级，以及 Docker 验证和 CodeQL 的全部必需检查。只有 minor/patch 会以 merge commit 串行自动合并，major 保持独立 PR 供人工审查。
+
+自动合并后会显式触发并等待 `master` 的 Docker 发布和 CodeQL，避免 `GITHUB_TOKEN` 产生的合并事件不触发后续工作流。CodeQL 对 Python 和 GitHub Actions 同时执行扩展安全与质量查询，并在每次 push、PR、手动触发之外增加每周兜底扫描。

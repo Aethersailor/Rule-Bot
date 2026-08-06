@@ -67,6 +67,13 @@ class MatchScopeTokenService:
                 )
                 """
             )
+            connection.execute(
+                """
+                UPDATE matchscope_tokens
+                SET last_used_at = NULL
+                WHERE last_used_at IS NOT NULL
+                """
+            )
         self.database_path.chmod(0o600)
 
     async def has_current_consent(self, user_id: int) -> bool:

@@ -56,6 +56,11 @@ class TestMatchScopeTokens(unittest.IsolatedAsyncioTestCase):
             status = await service.status(123)
             self.assertEqual(status["version"], 4)
             self.assertTrue(status["enabled"])
+            with closing(sqlite3.connect(database_path)) as connection:
+                last_used_at = connection.execute(
+                    "SELECT last_used_at FROM matchscope_tokens WHERE user_id = 123"
+                ).fetchone()[0]
+            self.assertIsNone(last_used_at)
             self.assertFalse(await service.has_current_consent(123))
             with self.assertRaises(PermissionError):
                 await service.issue(123)

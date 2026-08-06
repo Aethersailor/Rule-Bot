@@ -10,6 +10,7 @@ from loguru import logger
 from .dns_service import DNSService
 from .geoip_service import GeoIPService
 from ..utils.domain_utils import extract_second_level_domain, normalize_domain
+from ..utils.privacy import log_reference
 
 
 class DomainChecker:
@@ -47,19 +48,28 @@ class DomainChecker:
             }
             
             # 1. 查询域名 IP
-            logger.info(f"查询域名 {normalized_domain} 的 IP 地址...")
+            logger.info(
+                "查询域名 IP 地址，domain_ref={}",
+                log_reference(normalized_domain),
+            )
             domain_ip_task = asyncio.create_task(
                 self.dns_service.query_a_record(normalized_domain)
             )
             second_level_ip_task = None
             if second_level and second_level != normalized_domain:
-                logger.info(f"查询二级域名 {second_level} 的 IP 地址...")
+                logger.info(
+                    "查询二级域名 IP 地址，domain_ref={}",
+                    log_reference(second_level),
+                )
                 second_level_ip_task = asyncio.create_task(
                     self.dns_service.query_a_record(second_level)
                 )
 
             ns_domain = second_level if second_level else normalized_domain
-            logger.info(f"查询域名 {ns_domain} 的 NS 记录...")
+            logger.info(
+                "查询域名 NS 记录，domain_ref={}",
+                log_reference(ns_domain),
+            )
             ns_task = asyncio.create_task(
                 self.dns_service.query_ns_records(ns_domain)
             )
@@ -184,7 +194,11 @@ class DomainChecker:
             return result
             
         except Exception as e:
-            logger.error(f"域名检查失败: {e}")
+            logger.error(
+                "域名检查失败，domain_ref={}，error_type={}",
+                log_reference(domain),
+                type(e).__name__,
+            )
             return {"error": f"域名检查失败: {str(e)}"}
     
     def _generate_recommendation(self, check_result: Dict[str, Any]) -> str:
@@ -254,7 +268,7 @@ class DomainChecker:
         try:
             # 检查 check_result 是否有效
             if not check_result or not isinstance(check_result, dict):
-                logger.warning(f"无效的 check_result: {check_result}")
+                logger.warning("无效的域名检查结果，原始内容不写入日志")
                 return None
             if check_result.get("error") or check_result.get("lookup_status") != "ok":
                 return None
@@ -282,5 +296,8 @@ class DomainChecker:
             return None
             
         except Exception as e:
-            logger.error(f"get_target_domain_to_add 失败: {e}", exc_info=True)
+            logger.error(
+                "获取目标域名失败，error_type={}（异常正文不写入日志）",
+                type(e).__name__,
+            )
             return None 

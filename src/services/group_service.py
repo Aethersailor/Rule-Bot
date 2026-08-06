@@ -11,6 +11,7 @@ from telegram.error import TelegramError
 
 from ..config import Config
 from ..utils.cache import TTLCache
+from ..utils.privacy import log_reference
 
 
 class GroupService:
@@ -60,14 +61,27 @@ class GroupService:
             is_member = chat_member.status in valid_statuses
             self._membership_cache.set(user_id, is_member)
             
-            logger.debug(f"用户 {user_id} 群组状态: {chat_member.status}, 是否为成员: {is_member}")
+            logger.debug(
+                "群成员检查完成: user_ref={}, status={}, member={}",
+                log_reference(str(user_id)),
+                chat_member.status,
+                is_member,
+            )
             return is_member
 
         except TelegramError as e:
-            logger.warning(f"检查用户 {user_id} 群组成员身份失败: {e}")
+            logger.warning(
+                "群成员检查失败: user_ref={}, error_type={}",
+                log_reference(str(user_id)),
+                type(e).__name__,
+            )
             return None
         except Exception as e:
-            logger.warning(f"检查用户 {user_id} 群组成员身份失败: {e}")
+            logger.warning(
+                "群成员检查异常: user_ref={}, error_type={}",
+                log_reference(str(user_id)),
+                type(e).__name__,
+            )
             return None
     
     def get_join_group_message(self) -> str:
@@ -124,30 +138,30 @@ class GroupService:
                 timeout=8,
             )
             logger.info(
-                "群组播报已发送: group={}, domain={}, commit={}",
+                "群组播报已发送: group={}, domain_ref={}, commit={}",
                 self._announcement_group_id,
-                domain,
+                log_reference(domain),
                 short_sha or "unknown",
             )
             return True
         except asyncio.TimeoutError:
             logger.warning(
-                "群组播报超时，不影响规则提交: group={}, domain={}",
+                "群组播报超时，不影响规则提交: group={}, domain_ref={}",
                 self._announcement_group_id,
-                domain,
+                log_reference(domain),
             )
         except TelegramError as e:
             logger.warning(
-                "群组播报失败，不影响规则提交: group={}, domain={}, error={}",
+                "群组播报失败，不影响规则提交: group={}, domain_ref={}, error={}",
                 self._announcement_group_id,
-                domain,
+                log_reference(domain),
                 e,
             )
         except Exception as e:
             logger.warning(
-                "群组播报异常，不影响规则提交: group={}, domain={}, error={}",
+                "群组播报异常，不影响规则提交: group={}, domain_ref={}, error={}",
                 self._announcement_group_id,
-                domain,
+                log_reference(domain),
                 e,
             )
         return False

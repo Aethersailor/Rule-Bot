@@ -3,6 +3,11 @@ services:
     image: aethersailor/rule-bot:latest
     container_name: rule-bot
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 1m
+        max-file: "2"
     # MatchScope 接入默认关闭；启用后建议只发布到宿主机回环地址，再由反代或 Cloudflare Tunnel 暴露。
     # ports:
     #   - "127.0.0.1:8765:8765" # 私用入口

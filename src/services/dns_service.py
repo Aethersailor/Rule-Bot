@@ -14,6 +14,8 @@ import dns.rcode
 import dns.rdatatype
 from loguru import logger
 
+from ..utils.privacy import log_reference
+
 from ..utils.cache import TTLCache
 from ..utils.metrics import METRICS
 
@@ -101,7 +103,11 @@ class DNSService:
                 try:
                     ips = await future
                     if ips:
-                        logger.debug(f"DoH 查询 {domain} 成功，获得 {len(ips)} 个 IP")
+                        logger.debug(
+                            "DoH 查询成功，domain_ref={}，获得 {} 个 IP",
+                            log_reference(domain),
+                            len(ips),
+                        )
                         self._a_cache.set(cache_key, ips)
                         # 取消其他未完成的任务
                         for task in tasks:
@@ -118,7 +124,10 @@ class DNSService:
                     # 单个任务失败不影响其他任务
                     continue
             
-            logger.warning(f"所有 DoH 服务器查询域名 {domain} 都失败")
+            logger.warning(
+                "所有 DoH 服务器查询域名均失败，domain_ref={}",
+                log_reference(domain),
+            )
             METRICS.record_request(
                 "dns.query_a",
                 (time.perf_counter() - start_ts) * 1000,
@@ -126,7 +135,11 @@ class DNSService:
             )
             return []
         except Exception as e:
-            logger.error(f"DNS 查询失败: {e}")
+            logger.error(
+                "DNS 查询失败，domain_ref={}，error_type={}",
+                log_reference(domain),
+                type(e).__name__,
+            )
             METRICS.record_request(
                 "dns.query_a",
                 (time.perf_counter() - start_ts) * 1000,
@@ -163,7 +176,10 @@ class DNSService:
                 try:
                     ns_servers = await future
                     if ns_servers:
-                        logger.debug(f"DoH 查询 {domain} NS 记录成功")
+                        logger.debug(
+                            "DoH 查询 NS 记录成功，domain_ref={}",
+                            log_reference(domain),
+                        )
                         self._ns_cache.set(domain, ns_servers)
                         # 取消其他任务
                         for task in tasks:
@@ -180,10 +196,16 @@ class DNSService:
                     continue
             
             # DoH 查询失败时，尝试使用系统 DNS 作为备用
-            logger.info(f"DoH 查询 NS 记录失败，尝试使用系统 DNS 查询 {domain}")
+            logger.info(
+                "DoH 查询 NS 记录失败，尝试系统 DNS，domain_ref={}",
+                log_reference(domain),
+            )
             ns_servers = await self._query_ns_system_dns(domain)
             if ns_servers:
-                logger.debug(f"使用系统 DNS 查询 {domain} NS 记录成功")
+                logger.debug(
+                    "系统 DNS 查询 NS 记录成功，domain_ref={}",
+                    log_reference(domain),
+                )
                 self._ns_cache.set(domain, ns_servers)
                 METRICS.record_request(
                     "dns.query_ns",
@@ -192,7 +214,10 @@ class DNSService:
                 )
                 return ns_servers
             
-            logger.warning(f"所有 NS 记录查询方法都失败，域名: {domain}")
+            logger.warning(
+                "所有 NS 记录查询方法均失败，domain_ref={}",
+                log_reference(domain),
+            )
             METRICS.record_request(
                 "dns.query_ns",
                 (time.perf_counter() - start_ts) * 1000,
@@ -201,7 +226,11 @@ class DNSService:
             return []
             
         except Exception as e:
-            logger.error(f"NS 记录查询失败: {e}")
+            logger.error(
+                "NS 记录查询失败，domain_ref={}，error_type={}",
+                log_reference(domain),
+                type(e).__name__,
+            )
             METRICS.record_request(
                 "dns.query_ns",
                 (time.perf_counter() - start_ts) * 1000,
@@ -214,11 +243,19 @@ class DNSService:
         try:
             ns_servers = await asyncio.to_thread(self._query_ns_system_dns_sync, domain)
             
-            logger.debug(f"系统 DNS 查询 {domain} NS 记录成功，获得 {len(ns_servers)} 个 NS 服务器")
+            logger.debug(
+                "系统 DNS 查询 NS 记录成功，domain_ref={}，获得 {} 个 NS 服务器",
+                log_reference(domain),
+                len(ns_servers),
+            )
             return ns_servers
             
         except Exception as e:
-            logger.warning(f"系统 DNS 查询 NS 记录失败: {e}")
+            logger.warning(
+                "系统 DNS 查询 NS 记录失败，domain_ref={}，error_type={}",
+                log_reference(domain),
+                type(e).__name__,
+            )
             return []
 
     @staticmethod
@@ -244,7 +281,11 @@ class DNSService:
             return query.to_wire()
             
         except Exception as e:
-            logger.error(f"构建 DNS 查询包失败: {e}")
+            logger.error(
+                "构建 DNS 查询包失败，domain_ref={}，error_type={}",
+                log_reference(domain),
+                type(e).__name__,
+            )
             return b''
     
     async def _perform_doh_query(

@@ -13,6 +13,7 @@ from ..config import Config
 from ..data_manager import DataManager
 from ..utils.text_extractor import extract_domain_for_rules, remove_bot_mention
 from ..utils.domain_utils import is_cn_domain
+from ..utils.privacy import log_reference
 
 
 class GroupHandler:
@@ -173,7 +174,9 @@ class GroupHandler:
         # 1. 先从当前消息提取
         domain = extract_domain_for_rules(clean_text)
         if domain:
-            logger.debug(f"从当前消息提取到域名: {domain}")
+            logger.debug(
+                "从当前消息提取到域名，domain_ref={}", log_reference(domain)
+            )
             return domain
         
         # 2. 如果当前消息无域名，检查是否是回复消息
@@ -181,7 +184,9 @@ class GroupHandler:
             reply_text = message.reply_to_message.text or ""
             domain = extract_domain_for_rules(reply_text)
             if domain:
-                logger.debug(f"从回复消息提取到域名: {domain}")
+                logger.debug(
+                    "从回复消息提取到域名，domain_ref={}", log_reference(domain)
+                )
                 return domain
         
         return None

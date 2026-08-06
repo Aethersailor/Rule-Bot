@@ -17,6 +17,7 @@ from ..utils.cache import TTLCache
 from ..utils.domain_utils import normalize_domain
 from ..utils.input_safety import sanitize_identity, validate_single_line_text
 from ..utils.metrics import METRICS
+from ..utils.privacy import log_reference
 
 
 class GitHubService:
@@ -314,7 +315,13 @@ class GitHubService:
             max_retries = 3
             for attempt in range(1, max_retries + 1):
                 # 获取当前文件内容和 SHA
-                logger.debug(f"开始添加域名 {domain} 到文件 {file_path} (尝试 {attempt}/{max_retries})")
+                logger.debug(
+                    "开始写入规则，domain_ref={}，文件={}，尝试 {}/{}",
+                    log_reference(domain),
+                    file_path,
+                    attempt,
+                    max_retries,
+                )
                 file_data = await self.get_rule_file_data(file_path, use_cache=(attempt == 1))
                 if not file_data:
                     error_msg = f"无法获取规则文件内容: {file_path}。请检查文件是否存在，仓库访问权限是否正确。"
@@ -413,7 +420,13 @@ class GitHubService:
 
                 result, error = await asyncio.to_thread(_prepare_update)
                 if error:
-                    logger.error(error)
+                    logger.error(
+                        "规则写入准备失败，domain_ref={}，reason={}",
+                        log_reference(domain),
+                        "already_exists"
+                        if error.startswith("域名已存在于规则文件中:")
+                        else "invalid_metadata",
+                    )
                     return {
                         "success": False,
                         "already_exists": error.startswith("域名已存在于规则文件中:"),
@@ -422,7 +435,9 @@ class GitHubService:
 
                 new_content, full_commit_message = result
                 
-                logger.debug(f"准备提交更改: {full_commit_message.splitlines()[0]}")
+                logger.debug(
+                    "准备提交规则更改，domain_ref={}", log_reference(domain)
+                )
                 
                 # 在线程中执行GitHub API调用
                 def _perform_commit():
@@ -458,7 +473,11 @@ class GitHubService:
                 commit_sha = commit_result['commit'].sha
                 commit_url = f"https://github.com/{self.config.GITHUB_REPO}/commit/{commit_sha}"
                 
-                logger.info(f"成功添加域名 {domain} 到规则文件，commit: {commit_sha}")
+                logger.info(
+                    "成功添加规则，domain_ref={}，commit={}",
+                    log_reference(domain),
+                    commit_sha,
+                )
                 self._file_cache.pop(self._cache_key(file_path))
                 self._analysis_cache.clear()
                 
@@ -607,7 +626,11 @@ class GitHubService:
                 commit_sha = commit_result['commit'].sha
                 commit_url = f"https://github.com/{self.config.GITHUB_REPO}/commit/{commit_sha}"
                 
-                logger.info(f"成功删除域名 {domain} 从规则文件，commit: {commit_sha}")
+                logger.info(
+                    "成功删除规则，domain_ref={}，commit={}",
+                    log_reference(domain),
+                    commit_sha,
+                )
                 self._file_cache.pop(self._cache_key(file_path))
                 self._analysis_cache.clear()
                 

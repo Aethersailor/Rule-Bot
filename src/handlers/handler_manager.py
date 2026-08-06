@@ -27,6 +27,7 @@ from ..services.domain_checker import DomainChecker
 from ..services.group_service import GroupService
 from ..services.matchscope_token_service import MatchScopeTokenService
 from ..utils.domain_utils import normalize_domain, extract_second_level_domain, extract_second_level_domain_for_rules, is_cn_domain
+from ..utils.privacy import log_reference
 from ..utils.input_safety import validate_single_line_text
 
 
@@ -853,6 +854,9 @@ class HandlerManager:
                 "matchscope_issue",
                 "matchscope_revoke",
                 "matchscope_delete_credential",
+                "matchscope_privacy",
+                "matchscope_privacy_accept",
+                "matchscope_privacy_withdraw",
             }
             # MatchScope issuance performs its own fresh membership check;
             # access, revocation and credential deletion remain available.
@@ -882,6 +886,12 @@ class HandlerManager:
                 await self._revoke_matchscope_token(query, user_id)
             elif data == "matchscope_delete_credential":
                 await query.message.delete()
+            elif data == "matchscope_privacy":
+                await self._show_matchscope_privacy(query, user_id)
+            elif data == "matchscope_privacy_accept":
+                await self._accept_matchscope_privacy(query, user_id)
+            elif data == "matchscope_privacy_withdraw":
+                await self._withdraw_matchscope_privacy(query, user_id)
             elif data.startswith("add_domain|"):
                 await self._handle_add_domain_callback(query, user_id, data)
             elif data.startswith("confirm_add|"):
@@ -950,11 +960,13 @@ class HandlerManager:
             await query.edit_message_text("MatchScope 社区接入当前未开放。")
             return
         status = await self.matchscope_token_service.status(user_id)
-        active = bool(
+        token_active = bool(
             status
             and status.get("enabled")
             and int(status.get("expires_at", 0)) > int(time.time())
         )
+        consented = await self.matchscope_token_service.has_current_consent(user_id)
+        active = token_active and consented
         status_text = "尚未签发或已失效"
         issue_label = "🔑 申请 Token"
         if active:
@@ -963,10 +975,14 @@ class HandlerManager:
             ).strftime("%Y-%m-%d %H:%M UTC")
             status_text = f"有效，有效期至 {expires}"
             issue_label = "🔄 重新签发 Token"
-        keyboard = [
-            [InlineKeyboardButton(issue_label, callback_data="matchscope_issue")],
-        ]
-        if active:
+        elif token_active:
+            status_text = "已暂停，请先确认当前隐私说明"
+        keyboard = [[InlineKeyboardButton("🛡️ 隐私说明", callback_data="matchscope_privacy")]]
+        if consented:
+            keyboard.append(
+                [InlineKeyboardButton(issue_label, callback_data="matchscope_issue")]
+            )
+        if token_active:
             keyboard.append(
                 [InlineKeyboardButton("🚫 吊销当前 Token", callback_data="matchscope_revoke")]
             )
@@ -977,13 +993,87 @@ class HandlerManager:
             "重新签发会立即使旧 Token 失效。\n\n"
             f"🔐 *状态：* {status_text}\n"
             f"🌐 *入口：* `{self._matchscope_endpoint()}`\n\n"
-            "Token 只会显示一次，请保存在 MatchScope 的独立凭据文件中。",
+            "申请前必须阅读并确认隐私说明。Token 只会显示一次，"
+            "请保存在 MatchScope 的独立凭据文件中。",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown",
         )
 
+    async def _show_matchscope_privacy(self, query, user_id: int):
+        """Explain the community ingress privacy boundary before consent."""
+        if not self.matchscope_token_service:
+            await query.edit_message_text("MatchScope 社区接入当前未开放。")
+            return
+        consented = await self.matchscope_token_service.has_current_consent(user_id)
+        keyboard = []
+        if not consented:
+            keyboard.append(
+                [
+                    InlineKeyboardButton(
+                        "✅ 同意并继续", callback_data="matchscope_privacy_accept"
+                    )
+                ]
+            )
+        else:
+            keyboard.append(
+                [
+                    InlineKeyboardButton(
+                        "撤回同意并吊销 Token",
+                        callback_data="matchscope_privacy_withdraw",
+                    )
+                ]
+            )
+        keyboard.extend(
+            [
+                [
+                    InlineKeyboardButton(
+                        "📖 完整隐私说明",
+                        url="https://github.com/Aethersailor/Rule-Bot/blob/master/PRIVACY.md",
+                    )
+                ],
+                [InlineKeyboardButton("↩️ 返回接入页", callback_data="matchscope_access")],
+            ]
+        )
+        await query.edit_message_text(
+            "🛡️ *MatchScope 隐私说明*\n\n"
+            "• MatchScope 只上报用于规则判断的注册域名，不发送 URL 路径、"
+            "查询参数、网页内容或访问次数。\n"
+            "• 同一注册域名会在本地去重；`.cn`、本地排除项不会发送。\n"
+            "• 公网连接会让 Cloudflare 看见出口 IP 和请求时间；"
+            "可在 MatchScope 中配置自己的 HTTP/SOCKS5 代理。\n"
+            "• 社区 Token 与 Telegram 用户关联，用于群成员校验、限流、"
+            "续签和吊销；不会把 Telegram 身份写入规则提交。\n"
+            "• 被拒绝的域名不写入 Rule-Bot 数据库；符合规则并成功添加的域名"
+            "会公开出现在 GitHub 规则和提交历史中。\n\n"
+            f"当前状态：{'已同意' if consented else '尚未同意'}",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+        )
+
+    async def _accept_matchscope_privacy(self, query, user_id: int):
+        if not self.matchscope_token_service:
+            await query.edit_message_text("MatchScope 社区接入当前未开放。")
+            return
+        await self.matchscope_token_service.consent(user_id)
+        await self._show_matchscope_access(query, user_id)
+
+    async def _withdraw_matchscope_privacy(self, query, user_id: int):
+        if not self.matchscope_token_service:
+            await query.edit_message_text("MatchScope 社区接入当前未开放。")
+            return
+        await self.matchscope_token_service.withdraw_consent(user_id)
+        await query.edit_message_text(
+            "🛡️ 已撤回隐私同意并吊销当前 MatchScope Token。",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("↩️ 返回接入页", callback_data="matchscope_access")]]
+            ),
+        )
+
     async def _issue_matchscope_token(self, query, user_id: int):
         """Freshly verify membership and deliver a one-time credential message."""
+        if not await self.matchscope_token_service.has_current_consent(user_id):
+            await self._show_matchscope_privacy(query, user_id)
+            return
         membership = await self.group_service.check_user_in_group(
             user_id, force_refresh=True
         )
@@ -1746,16 +1836,25 @@ class HandlerManager:
                 return
             
             # 获取要添加的目标域名
-            logger.debug(f"准备获取目标域名，check_result: {check_result}")
+            logger.debug(
+                "准备获取目标域名，domain_ref={}，检查详情不写入日志",
+                log_reference(domain),
+            )
             target_domain = self.domain_checker.get_target_domain_to_add(check_result)
             if not target_domain:
                 target_domain = domain
-                logger.warning(f"无法获取目标域名，使用原始域名: {domain}")
+                logger.warning(
+                    "无法获取目标域名，使用原始域名，domain_ref={}",
+                    log_reference(domain),
+                )
             
             # 获取用户名
             username = query.from_user.first_name or query.from_user.username or str(query.from_user.id)
             
-            logger.debug(f"最终目标域名: {target_domain}, 用户名: {username}, 描述: {description}")
+            logger.debug(
+                "已确定最终目标，domain_ref={}，用户信息和说明不写入运行日志",
+                log_reference(target_domain),
+            )
             
             # 显示添加中消息
             await query.edit_message_text("⏳ 正在添加域名到 GitHub 规则...")

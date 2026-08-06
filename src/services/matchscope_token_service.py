@@ -15,6 +15,7 @@ from typing import Optional
 
 TOKEN_VERSION = 1
 TOKEN_SCOPE = "matchscope:submit"
+PRIVACY_NOTICE_VERSION = 1
 
 
 def _b64encode(value: bytes) -> str:
@@ -57,9 +58,81 @@ class MatchScopeTokenService:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS matchscope_privacy_consents (
+                    user_id INTEGER PRIMARY KEY,
+                    notice_version INTEGER NOT NULL,
+                    consented_at INTEGER NOT NULL
+                )
+                """
+            )
         self.database_path.chmod(0o600)
 
+    async def has_current_consent(self, user_id: int) -> bool:
+        async with self._lock:
+            return await asyncio.to_thread(self._has_current_consent, user_id)
+
+    def _has_current_consent(self, user_id: int) -> bool:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT notice_version FROM matchscope_privacy_consents
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+            return bool(
+                row and int(row["notice_version"]) >= PRIVACY_NOTICE_VERSION
+            )
+
+    async def consent(self, user_id: int) -> int:
+        now = int(time.time())
+        async with self._lock:
+            await asyncio.to_thread(self._consent, user_id, now)
+        return now
+
+    def _consent(self, user_id: int, now: int) -> None:
+        with closing(self._connect()) as connection, connection:
+            connection.execute(
+                """
+                INSERT INTO matchscope_privacy_consents
+                    (user_id, notice_version, consented_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    notice_version = excluded.notice_version,
+                    consented_at = excluded.consented_at
+                """,
+                (user_id, PRIVACY_NOTICE_VERSION, now),
+            )
+            connection.execute(
+                "UPDATE matchscope_tokens SET last_used_at = NULL WHERE user_id = ?",
+                (user_id,),
+            )
+
+    async def withdraw_consent(self, user_id: int) -> bool:
+        async with self._lock:
+            return await asyncio.to_thread(self._withdraw_consent, user_id)
+
+    def _withdraw_consent(self, user_id: int) -> bool:
+        with closing(self._connect()) as connection, connection:
+            token_cursor = connection.execute(
+                """
+                UPDATE matchscope_tokens
+                SET enabled = 0, last_used_at = NULL
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            )
+            consent_cursor = connection.execute(
+                "DELETE FROM matchscope_privacy_consents WHERE user_id = ?",
+                (user_id,),
+            )
+            return token_cursor.rowcount > 0 or consent_cursor.rowcount > 0
+
     async def issue(self, user_id: int) -> dict:
+        if not await self.has_current_consent(user_id):
+            raise PermissionError("current MatchScope privacy notice is not accepted")
         now = int(time.time())
         expires_at = now + self.ttl_seconds
         subject = secrets.token_urlsafe(12)
@@ -130,19 +203,19 @@ class MatchScopeTokenService:
             )
             return cursor.rowcount > 0
 
-    async def verify(self, token: str) -> Optional[int]:
+    async def verify(self, token: str) -> Optional[str]:
         payload = self._verify_signature_and_payload(token)
         if payload is None:
             return None
 
         async with self._lock:
-            user_id = await asyncio.to_thread(
+            subject = await asyncio.to_thread(
                 self._verify_state,
                 payload["sub"],
                 int(payload["ver"]),
                 int(payload["exp"]),
             )
-        return user_id
+        return subject
 
     def _verify_signature_and_payload(self, token: str) -> Optional[dict]:
         try:
@@ -177,13 +250,16 @@ class MatchScopeTokenService:
 
     def _verify_state(
         self, subject: str, version: int, expires_at: int
-    ) -> Optional[int]:
+    ) -> Optional[str]:
         now = int(time.time())
         with closing(self._connect()) as connection, connection:
             row = connection.execute(
                 """
-                SELECT user_id, version, enabled, expires_at, last_used_at
-                FROM matchscope_tokens WHERE subject = ?
+                SELECT t.version, t.enabled, t.expires_at, c.notice_version
+                FROM matchscope_tokens AS t
+                LEFT JOIN matchscope_privacy_consents AS c
+                    ON c.user_id = t.user_id
+                WHERE t.subject = ?
                 """,
                 (subject,),
             ).fetchone()
@@ -193,15 +269,11 @@ class MatchScopeTokenService:
                 or int(row["version"]) != version
                 or int(row["expires_at"]) != expires_at
                 or int(row["expires_at"]) <= now
+                or row["notice_version"] is None
+                or int(row["notice_version"]) < PRIVACY_NOTICE_VERSION
             ):
                 return None
-            last_used_at = row["last_used_at"]
-            if last_used_at is None or now - int(last_used_at) >= 300:
-                connection.execute(
-                    "UPDATE matchscope_tokens SET last_used_at = ? WHERE user_id = ?",
-                    (now, int(row["user_id"])),
-                )
-            return int(row["user_id"])
+            return subject
 
     async def status(self, user_id: int) -> Optional[dict]:
         async with self._lock:
@@ -211,7 +283,7 @@ class MatchScopeTokenService:
         with closing(self._connect()) as connection, connection:
             row = connection.execute(
                 """
-                SELECT version, enabled, issued_at, expires_at, last_used_at
+                SELECT version, enabled, issued_at, expires_at
                 FROM matchscope_tokens WHERE user_id = ?
                 """,
                 (user_id,),

@@ -3,7 +3,9 @@ import unittest
 import base64
 import json
 import os
+import sqlite3
 import stat
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -14,6 +16,7 @@ from src.handlers.handler_manager import HandlerManager
 from src.services.github_service import GitHubService
 from src.services.matchscope_api import ListenerConfig, MatchScopeAPIServer
 from src.services.matchscope_token_service import MatchScopeTokenService
+from src.utils.privacy import log_reference
 
 
 class TestMatchScopeTokens(unittest.IsolatedAsyncioTestCase):
@@ -25,14 +28,57 @@ class TestMatchScopeTokens(unittest.IsolatedAsyncioTestCase):
             if os.name == "posix":
                 self.assertEqual(stat.S_IMODE(database_path.stat().st_mode), 0o600)
 
+    async def test_existing_token_database_upgrades_without_data_loss(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "tokens.sqlite3"
+            with closing(sqlite3.connect(database_path)) as connection, connection:
+                connection.execute(
+                    """
+                    CREATE TABLE matchscope_tokens (
+                        user_id INTEGER PRIMARY KEY,
+                        subject TEXT NOT NULL UNIQUE,
+                        version INTEGER NOT NULL,
+                        enabled INTEGER NOT NULL,
+                        issued_at INTEGER NOT NULL,
+                        expires_at INTEGER NOT NULL,
+                        last_used_at INTEGER
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO matchscope_tokens VALUES
+                        (123, 'legacy-subject', 4, 1, 100, 4102444800, 999)
+                    """
+                )
+
+            service = MatchScopeTokenService(database_path, "s" * 32, 90)
+            status = await service.status(123)
+            self.assertEqual(status["version"], 4)
+            self.assertTrue(status["enabled"])
+            self.assertFalse(await service.has_current_consent(123))
+            with self.assertRaises(PermissionError):
+                await service.issue(123)
+            await service.consent(123)
+            with closing(sqlite3.connect(database_path)) as connection:
+                last_used_at = connection.execute(
+                    "SELECT last_used_at FROM matchscope_tokens WHERE user_id = 123"
+                ).fetchone()[0]
+            self.assertIsNone(last_used_at)
+
     async def test_reissue_and_revoke_invalidate_old_tokens(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             service = MatchScopeTokenService(
                 Path(temp_dir) / "tokens.sqlite3", "s" * 32, 90
             )
+            with self.assertRaises(PermissionError):
+                await service.issue(123)
+            await service.consent(123)
 
             first = await service.issue(123)
-            self.assertEqual(await service.verify(first["token"]), 123)
+            verified_subject = await service.verify(first["token"])
+            self.assertIsInstance(verified_subject, str)
+            self.assertNotEqual(verified_subject, "123")
             encoded_payload = first["token"].split(".")[1]
             payload = json.loads(
                 base64.urlsafe_b64decode(encoded_payload + "=" * (-len(encoded_payload) % 4))
@@ -42,21 +88,42 @@ class TestMatchScopeTokens(unittest.IsolatedAsyncioTestCase):
 
             second = await service.issue(123)
             self.assertIsNone(await service.verify(first["token"]))
-            self.assertEqual(await service.verify(second["token"]), 123)
+            self.assertIsInstance(await service.verify(second["token"]), str)
 
             self.assertTrue(await service.revoke(123))
             self.assertIsNone(await service.verify(second["token"]))
+
+    async def test_withdrawal_stops_existing_token_until_new_consent(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = MatchScopeTokenService(
+                Path(temp_dir) / "tokens.sqlite3", "s" * 32, 90
+            )
+            await service.consent(321)
+            issued = await service.issue(321)
+            self.assertIsNotNone(await service.verify(issued["token"]))
+
+            self.assertTrue(await service.withdraw_consent(321))
+            self.assertFalse(await service.has_current_consent(321))
+            self.assertIsNone(await service.verify(issued["token"]))
 
     async def test_tampered_token_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             service = MatchScopeTokenService(
                 Path(temp_dir) / "tokens.sqlite3", "k" * 32, 90
             )
+            await service.consent(456)
             issued = await service.issue(456)
             tampered = issued["token"][:-1] + (
                 "A" if issued["token"][-1] != "A" else "B"
             )
             self.assertIsNone(await service.verify(tampered))
+
+    def test_log_reference_is_stable_without_revealing_domain(self):
+        first = log_reference("Sensitive.Example")
+        second = log_reference("sensitive.example")
+        self.assertEqual(first, second)
+        self.assertEqual(len(first), 12)
+        self.assertNotIn("sensitive", first)
 
 
 class TestMatchScopeAPI(unittest.IsolatedAsyncioTestCase):
@@ -140,6 +207,35 @@ class TestMatchScopeAPI(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(limited.status, 429)
 
+    async def test_community_api_uses_opaque_token_subject(self):
+        self.handler.matchscope_token_service = SimpleNamespace(
+            verify=AsyncMock(return_value="opaque-random-subject")
+        )
+        listener = ListenerConfig(
+            name="community",
+            host="127.0.0.1",
+            port=0,
+            path="/api/hidden-community-path",
+            source="matchscope_community",
+        )
+        client = TestClient(TestServer(self.api._build_app(listener)))
+        await client.start_server()
+        try:
+            response = await client.post(
+                listener.path,
+                headers={"Authorization": "Bearer community-token"},
+                json={"version": 1, "domain": "example.com"},
+            )
+            self.assertEqual(response.status, 201)
+            self.handler.submit_matchscope_domain.assert_awaited_with(
+                "example.com",
+                source="matchscope_community",
+                rate_key=("matchscope_community:adds", "opaque-random-subject"),
+                max_adds=2,
+            )
+        finally:
+            await client.close()
+
 
 class TestMatchScopeSubmission(unittest.IsolatedAsyncioTestCase):
     def test_main_menu_button_follows_public_api_switch(self):
@@ -179,6 +275,22 @@ class TestMatchScopeSubmission(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cn["status"], "ignored_cn")
         self.assertEqual(invalid["status"], "invalid_domain")
         manager.check_and_add_domain_auto.assert_not_awaited()
+
+    async def test_token_issue_requires_current_privacy_consent(self):
+        manager = HandlerManager.__new__(HandlerManager)
+        manager.matchscope_token_service = SimpleNamespace(
+            has_current_consent=AsyncMock(return_value=False)
+        )
+        manager.group_service = SimpleNamespace(
+            check_user_in_group=AsyncMock(return_value=True)
+        )
+        manager._show_matchscope_privacy = AsyncMock()
+        query = MagicMock()
+
+        await manager._issue_matchscope_token(query, 42)
+
+        manager._show_matchscope_privacy.assert_awaited_once_with(query, 42)
+        manager.group_service.check_user_in_group.assert_not_awaited()
 
     async def test_subdomain_is_reduced_before_shared_business_logic(self):
         manager = HandlerManager.__new__(HandlerManager)

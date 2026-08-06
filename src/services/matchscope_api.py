@@ -30,7 +30,7 @@ class MatchScopeAPIServer:
         self.config = config
         self.handler_manager = handler_manager
         self._runners: list[web.AppRunner] = []
-        self._request_history: dict[tuple[str, int], list[float]] = defaultdict(list)
+        self._request_history: dict[tuple[str, str | int], list[float]] = defaultdict(list)
 
     async def start(self) -> None:
         listeners = []
@@ -102,9 +102,8 @@ class MatchScopeAPIServer:
                     raise
             except Exception as error:
                 logger.warning(
-                    "MatchScope API 请求处理失败: {}: {}",
+                    "MatchScope API 请求处理失败: {}（异常正文不写入日志）",
                     type(error).__name__,
-                    error,
                 )
                 response = self._json_response("temporary_error", 503)
             response.headers["Cache-Control"] = "no-store"
@@ -144,7 +143,7 @@ class MatchScopeAPIServer:
 
     async def _authenticate(
         self, request: web.Request, listener: ListenerConfig
-    ) -> Optional[int]:
+    ) -> Optional[str | int]:
         token = self._bearer_token(request)
         if not token:
             return None
@@ -210,7 +209,9 @@ class MatchScopeAPIServer:
             payload["commit_url"] = result["commit_url"]
         return web.json_response(payload, status=http_status)
 
-    def _consume_request_slot(self, source: str, subject: int, limit: int) -> bool:
+    def _consume_request_slot(
+        self, source: str, subject: str | int, limit: int
+    ) -> bool:
         key = (source, subject)
         now = time.time()
         cutoff = now - 3600

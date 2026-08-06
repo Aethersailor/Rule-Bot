@@ -85,9 +85,9 @@ MatchScope 可以把实际流量中捕获的域名提交给 Rule-Bot。API 只�
 | 私用入口 | `8765` | 部署者自己的 MatchScope | 部署者保存的静态高强度 Token |
 | 社区入口 | `7654` | 向群成员提供公共接入服务 | Rule-Bot 为每位用户独立签发、续签和吊销的 Token |
 
-社区入口必须同时启用群成员验证。用户在机器人私聊主菜单的“MatchScope 接入”页面完成申请；签发时会实时检查群成员身份，Token 只显示一次，重新签发会立即废止旧 Token。
+社区入口必须同时启用群成员验证。用户在机器人私聊主菜单的“MatchScope 接入”页面阅读并确认[隐私说明](PRIVACY.md)后申请；签发时会实时检查群成员身份，Token 只显示一次，重新签发会立即废止旧 Token。升级后，既有社区 Token 会暂停，用户确认当前版本的隐私说明后可继续使用原 Token；撤回同意会同时吊销 Token。
 
-随机 API 路径用于减少扫描噪声，不能代替 Token。建议只把两个端口发布到宿主机回环地址，再通过反向代理或 Cloudflare Tunnel 提供 HTTPS；不要把私用和社区入口合并成同一个端口、路径或共享凭据。
+随机 API 路径用于减少扫描噪声，不能代替 Token。建议只把两个端口发布到宿主机回环地址，再通过反向代理或 Cloudflare Tunnel 提供 HTTPS；不要把私用和社区入口合并成同一个端口、路径或共享凭据。公共 Cloudflare 主机还应使用按主机名限定的 Request Header Transform Rule 移除 `CF-Connecting-IP`、`X-Forwarded-For` 和 `True-Client-IP`，避免客户端 IP 继续进入源站；这不会阻止 Cloudflare 自身看到网络元数据。
 
 ## Docker 部署
 
@@ -114,6 +114,11 @@ services:
     image: aethersailor/rule-bot:latest
     container_name: rule-bot
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 1m
+        max-file: "2"
     environment:
       TELEGRAM_BOT_TOKEN: "你的 Telegram Bot Token"
       GITHUB_TOKEN: "你的 GitHub Token"
@@ -210,7 +215,7 @@ environment:
   MATCHSCOPE_TOKEN_SIGNING_KEY_FILE: "/run/secrets/rule-bot/signing-key"
 ```
 
-如果只启用其中一个入口，只发布对应端口，并删除不需要的密钥文件和配置。社区入口必须持久化 `/app/data`，否则容器重建后签发状态会丢失。
+如果只启用其中一个入口，只发布对应端口，并删除不需要的密钥文件和配置。社区入口必须持久化 `/app/data`，否则容器重建后签发、吊销与隐私同意状态会丢失。
 
 反向代理应分别把两个 HTTPS 域名转发到 `127.0.0.1:8765` 和 `127.0.0.1:7654`。如果不使用反向代理，也可以通过对应的 `MATCHSCOPE_*_TLS_CERT_FILE` 和 `MATCHSCOPE_*_TLS_KEY_FILE` 让 Rule-Bot 直接提供 TLS。
 

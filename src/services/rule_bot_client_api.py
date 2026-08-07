@@ -1,4 +1,4 @@
-"""Minimal authenticated HTTP ingress for MatchScope domain submissions."""
+"""Minimal authenticated HTTP ingress for Rule-Bot Client domain submissions."""
 
 import hmac
 import ssl
@@ -23,7 +23,7 @@ class ListenerConfig:
     tls_key_file: str = ""
 
 
-class MatchScopeAPIServer:
+class RuleBotClientAPIServer:
     """Run the private and community listeners without exposing discovery routes."""
 
     def __init__(self, config, handler_manager):
@@ -34,29 +34,29 @@ class MatchScopeAPIServer:
 
     async def start(self) -> None:
         listeners = []
-        if self.config.MATCHSCOPE_PRIVATE_API_ENABLED:
+        if self.config.RULE_BOT_CLIENT_PRIVATE_API_ENABLED:
             listeners.append(
                 ListenerConfig(
                     name="private",
-                    host=self.config.MATCHSCOPE_PRIVATE_API_HOST,
-                    port=self.config.MATCHSCOPE_PRIVATE_API_PORT,
-                    path=self.config.MATCHSCOPE_PRIVATE_API_PATH,
-                    source="matchscope_private",
-                    static_token=self.config.MATCHSCOPE_PRIVATE_API_TOKEN,
-                    tls_cert_file=self.config.MATCHSCOPE_PRIVATE_API_TLS_CERT_FILE,
-                    tls_key_file=self.config.MATCHSCOPE_PRIVATE_API_TLS_KEY_FILE,
+                    host=self.config.RULE_BOT_CLIENT_PRIVATE_API_HOST,
+                    port=self.config.RULE_BOT_CLIENT_PRIVATE_API_PORT,
+                    path=self.config.RULE_BOT_CLIENT_PRIVATE_API_PATH,
+                    source="rule_bot_client_private",
+                    static_token=self.config.RULE_BOT_CLIENT_PRIVATE_API_TOKEN,
+                    tls_cert_file=self.config.RULE_BOT_CLIENT_PRIVATE_API_TLS_CERT_FILE,
+                    tls_key_file=self.config.RULE_BOT_CLIENT_PRIVATE_API_TLS_KEY_FILE,
                 )
             )
-        if self.config.MATCHSCOPE_PUBLIC_API_ENABLED:
+        if self.config.RULE_BOT_CLIENT_COMMUNITY_API_ENABLED:
             listeners.append(
                 ListenerConfig(
                     name="community",
-                    host=self.config.MATCHSCOPE_PUBLIC_API_HOST,
-                    port=self.config.MATCHSCOPE_PUBLIC_API_PORT,
-                    path=self.config.MATCHSCOPE_PUBLIC_API_PATH,
-                    source="matchscope_community",
-                    tls_cert_file=self.config.MATCHSCOPE_PUBLIC_API_TLS_CERT_FILE,
-                    tls_key_file=self.config.MATCHSCOPE_PUBLIC_API_TLS_KEY_FILE,
+                    host=self.config.RULE_BOT_CLIENT_COMMUNITY_API_HOST,
+                    port=self.config.RULE_BOT_CLIENT_COMMUNITY_API_PORT,
+                    path=self.config.RULE_BOT_CLIENT_COMMUNITY_API_PATH,
+                    source="rule_bot_client_community",
+                    tls_cert_file=self.config.RULE_BOT_CLIENT_COMMUNITY_API_TLS_CERT_FILE,
+                    tls_key_file=self.config.RULE_BOT_CLIENT_COMMUNITY_API_TLS_KEY_FILE,
                 )
             )
 
@@ -81,7 +81,7 @@ class MatchScopeAPIServer:
         self._runners.append(runner)
         scheme = "https" if listener.tls_cert_file else "http"
         logger.info(
-            "MatchScope {} API 已监听 {}://{}:{}（路径已隐藏）",
+            "Rule-Bot Client {} API 已监听 {}://{}:{}（路径已隐藏）",
             listener.name,
             scheme,
             listener.host,
@@ -102,7 +102,7 @@ class MatchScopeAPIServer:
                     raise
             except Exception as error:
                 logger.warning(
-                    "MatchScope API 请求处理失败: {}（异常正文不写入日志）",
+                    "Rule-Bot Client API 请求处理失败: {}（异常正文不写入日志）",
                     type(error).__name__,
                 )
                 response = self._json_response("temporary_error", 503)
@@ -147,9 +147,9 @@ class MatchScopeAPIServer:
         token = self._bearer_token(request)
         if not token:
             return None
-        if listener.source == "matchscope_private":
+        if listener.source == "rule_bot_client_private":
             return 0 if hmac.compare_digest(token, listener.static_token) else None
-        token_service = self.handler_manager.matchscope_token_service
+        token_service = self.handler_manager.rule_bot_client_token_service
         return await token_service.verify(token) if token_service else None
 
     async def _handle_submission(
@@ -160,9 +160,9 @@ class MatchScopeAPIServer:
             return self._json_response("unauthorized", 401)
 
         max_requests = (
-            self.config.MATCHSCOPE_PRIVATE_RATE_LIMIT_PER_HOUR
-            if listener.source == "matchscope_private"
-            else self.config.MATCHSCOPE_PUBLIC_RATE_LIMIT_PER_HOUR
+            self.config.RULE_BOT_CLIENT_PRIVATE_API_RATE_LIMIT_PER_HOUR
+            if listener.source == "rule_bot_client_private"
+            else self.config.RULE_BOT_CLIENT_COMMUNITY_API_RATE_LIMIT_PER_HOUR
         )
         if not self._consume_request_slot(listener.source, subject, max_requests):
             return self._json_response("rate_limited", 429)
@@ -182,7 +182,7 @@ class MatchScopeAPIServer:
         ):
             return self._json_response("invalid_request", 400)
 
-        result = await self.handler_manager.submit_matchscope_domain(
+        result = await self.handler_manager.submit_rule_bot_client_domain(
             body["domain"],
             source=listener.source,
             rate_key=(f"{listener.source}:adds", subject),

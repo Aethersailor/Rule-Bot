@@ -1,23 +1,23 @@
-# MatchScope 社区接入隐私说明
+# Rule-Bot Client Community 接入隐私说明
 
-本说明适用于 Rule-Bot 的 MatchScope 社区入口。私用入口由部署者自行管理，但采用相同的域名检查与日志最小化机制。
+本说明适用于 Rule-Bot 的 Rule-Bot Client Community 入口。私用入口由部署者自行管理，但采用相同的域名检查与日志最小化机制。
 
 ## 会收到什么
 
-MatchScope 仅向入口发送一个用于规则判断的域名。新版 MatchScope 默认先在本机执行以下处理：
+Rule-Bot Client 仅向入口发送一个用于规则判断的域名。新版 Rule-Bot Client 默认先在本机执行以下处理：
 
 - 将完整子域名缩减为公共后缀规则下的可注册域名；
 - 同一可注册域名只投递一次；
 - `.cn` 和用户自行配置的排除域名只在本地处理，不会投递；
 - 不发送 URL 路径、查询参数、网页内容、来源应用或访问次数。
 
-用户可在 MatchScope 配置中关闭主域缩减，因此社区服务无法单方面保证所有第三方客户端都遵循上述客户端默认值。Rule-Bot 仍只接受一个域名字段，不接受 URL 或额外元数据。
+用户可在 Rule-Bot Client 配置中关闭主域缩减，因此社区服务无法单方面保证所有第三方客户端都遵循上述客户端默认值。Rule-Bot 仍只接受一个域名字段，不接受 URL 或额外元数据。
 
 ## 网络元数据
 
 向公网入口建立连接时，Cloudflare 会处理连接的出口 IP、请求时间及常规网络元数据。公共入口会配置按域名生效的请求头转换，避免把客户端 IP 头继续传给 Rule-Bot；Rule-Bot 自身关闭 HTTP access log，业务代码不读取或存储客户端 IP。
 
-这不能阻止 Cloudflare 自身处理网络元数据。希望隐藏家庭公网 IP 的用户可以在 MatchScope 中配置自己的 HTTP、HTTPS 或 SOCKS5 代理；此时 Cloudflare 看到的是代理出口 IP，而代理提供方能够观察到连接目标和时间。
+这不能阻止 Cloudflare 自身处理网络元数据。希望隐藏家庭公网 IP 的用户可以在 Rule-Bot Client 中配置自己的 HTTP、HTTPS 或 SOCKS5 代理；此时 Cloudflare 看到的是代理出口 IP，而代理提供方能够观察到连接目标和时间。
 
 Rule-Bot 会为域名执行 DNS、NS 与 GeoIP 判断。相应 DNS 服务提供方可能看到被查询的域名；这是规则判断所必需的外部处理。
 
@@ -41,7 +41,7 @@ Token 自身只包含随机主体，不包含 Telegram 用户 ID。API 鉴权和
 
 ## 用户控制
 
-如果不接受上述边界，请不要启用 Rule-Bot 投递，MatchScope 仍可只在本地保存捕获结果。启用投递的用户可以随时：
+如果不接受上述边界，请不要启用 Rule-Bot 投递，Rule-Bot Client 仍可只在本地保存捕获结果。启用投递的用户可以随时：
 
 - 在本地排除敏感域名或整个后缀；
 - 配置代理；

@@ -14,27 +14,27 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from src.handlers.handler_manager import HandlerManager
 from src.services.github_service import GitHubService
-from src.services.matchscope_api import ListenerConfig, MatchScopeAPIServer
-from src.services.matchscope_token_service import MatchScopeTokenService
+from src.services.rule_bot_client_api import ListenerConfig, RuleBotClientAPIServer
+from src.services.rule_bot_client_token_service import RuleBotClientTokenService
 from src.utils.privacy import log_reference
 
 
-class TestMatchScopeTokens(unittest.IsolatedAsyncioTestCase):
+class TestRuleBotClientTokens(unittest.IsolatedAsyncioTestCase):
     async def test_database_is_private(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = Path(temp_dir) / "tokens.sqlite3"
-            MatchScopeTokenService(database_path, "s" * 32, 90)
+            RuleBotClientTokenService(database_path, "s" * 32, 90)
 
             if os.name == "posix":
                 self.assertEqual(stat.S_IMODE(database_path.stat().st_mode), 0o600)
 
-    async def test_existing_token_database_upgrades_without_data_loss(self):
+    async def test_existing_token_database_reopens_without_data_loss(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = Path(temp_dir) / "tokens.sqlite3"
             with closing(sqlite3.connect(database_path)) as connection, connection:
                 connection.execute(
                     """
-                    CREATE TABLE matchscope_tokens (
+                    CREATE TABLE rule_bot_client_tokens (
                         user_id INTEGER PRIMARY KEY,
                         subject TEXT NOT NULL UNIQUE,
                         version INTEGER NOT NULL,
@@ -47,18 +47,18 @@ class TestMatchScopeTokens(unittest.IsolatedAsyncioTestCase):
                 )
                 connection.execute(
                     """
-                    INSERT INTO matchscope_tokens VALUES
-                        (123, 'legacy-subject', 4, 1, 100, 4102444800, 999)
+                    INSERT INTO rule_bot_client_tokens VALUES
+                        (123, 'existing-subject', 4, 1, 100, 4102444800, 999)
                     """
                 )
 
-            service = MatchScopeTokenService(database_path, "s" * 32, 90)
+            service = RuleBotClientTokenService(database_path, "s" * 32, 90)
             status = await service.status(123)
             self.assertEqual(status["version"], 4)
             self.assertTrue(status["enabled"])
             with closing(sqlite3.connect(database_path)) as connection:
                 last_used_at = connection.execute(
-                    "SELECT last_used_at FROM matchscope_tokens WHERE user_id = 123"
+                    "SELECT last_used_at FROM rule_bot_client_tokens WHERE user_id = 123"
                 ).fetchone()[0]
             self.assertIsNone(last_used_at)
             self.assertFalse(await service.has_current_consent(123))
@@ -67,13 +67,13 @@ class TestMatchScopeTokens(unittest.IsolatedAsyncioTestCase):
             await service.consent(123)
             with closing(sqlite3.connect(database_path)) as connection:
                 last_used_at = connection.execute(
-                    "SELECT last_used_at FROM matchscope_tokens WHERE user_id = 123"
+                    "SELECT last_used_at FROM rule_bot_client_tokens WHERE user_id = 123"
                 ).fetchone()[0]
             self.assertIsNone(last_used_at)
 
     async def test_reissue_and_revoke_invalidate_old_tokens(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            service = MatchScopeTokenService(
+            service = RuleBotClientTokenService(
                 Path(temp_dir) / "tokens.sqlite3", "s" * 32, 90
             )
             with self.assertRaises(PermissionError):
@@ -100,7 +100,7 @@ class TestMatchScopeTokens(unittest.IsolatedAsyncioTestCase):
 
     async def test_withdrawal_stops_existing_token_until_new_consent(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            service = MatchScopeTokenService(
+            service = RuleBotClientTokenService(
                 Path(temp_dir) / "tokens.sqlite3", "s" * 32, 90
             )
             await service.consent(321)
@@ -113,7 +113,7 @@ class TestMatchScopeTokens(unittest.IsolatedAsyncioTestCase):
 
     async def test_tampered_token_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            service = MatchScopeTokenService(
+            service = RuleBotClientTokenService(
                 Path(temp_dir) / "tokens.sqlite3", "k" * 32, 90
             )
             await service.consent(456)
@@ -131,11 +131,11 @@ class TestMatchScopeTokens(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("sensitive", first)
 
 
-class TestMatchScopeAPI(unittest.IsolatedAsyncioTestCase):
+class TestRuleBotClientAPI(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.handler = SimpleNamespace(
-            matchscope_token_service=None,
-            submit_matchscope_domain=AsyncMock(
+            rule_bot_client_token_service=None,
+            submit_rule_bot_client_domain=AsyncMock(
                 return_value={
                     "status": "added",
                     "domain": "example.com",
@@ -144,16 +144,16 @@ class TestMatchScopeAPI(unittest.IsolatedAsyncioTestCase):
             ),
         )
         self.config = SimpleNamespace(
-            MATCHSCOPE_PRIVATE_RATE_LIMIT_PER_HOUR=2,
-            MATCHSCOPE_PUBLIC_RATE_LIMIT_PER_HOUR=2,
+            RULE_BOT_CLIENT_PRIVATE_API_RATE_LIMIT_PER_HOUR=2,
+            RULE_BOT_CLIENT_COMMUNITY_API_RATE_LIMIT_PER_HOUR=2,
         )
-        self.api = MatchScopeAPIServer(self.config, self.handler)
+        self.api = RuleBotClientAPIServer(self.config, self.handler)
         self.listener = ListenerConfig(
             name="private",
             host="127.0.0.1",
             port=0,
             path="/api/hidden-test-path",
-            source="matchscope_private",
+            source="rule_bot_client_private",
             static_token="p" * 32,
         )
         self.client = TestClient(TestServer(self.api._build_app(self.listener)))
@@ -172,7 +172,7 @@ class TestMatchScopeAPI(unittest.IsolatedAsyncioTestCase):
             self.listener.path, json={"version": 1, "domain": "example.com"}
         )
         self.assertEqual(unauthorized.status, 401)
-        self.handler.submit_matchscope_domain.assert_not_awaited()
+        self.handler.submit_rule_bot_client_domain.assert_not_awaited()
 
     async def test_valid_request_uses_server_owned_source(self):
         response = await self.client.post(
@@ -184,10 +184,10 @@ class TestMatchScopeAPI(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 201)
         payload = await response.json()
         self.assertEqual(payload["status"], "added")
-        self.handler.submit_matchscope_domain.assert_awaited_once_with(
+        self.handler.submit_rule_bot_client_domain.assert_awaited_once_with(
             "www.example.com",
-            source="matchscope_private",
-            rate_key=("matchscope_private:adds", 0),
+            source="rule_bot_client_private",
+            rate_key=("rule_bot_client_private:adds", 0),
             max_adds=2,
         )
 
@@ -212,8 +212,34 @@ class TestMatchScopeAPI(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(limited.status, 429)
 
+    async def test_terminal_status_contract_is_unchanged(self):
+        self.config.RULE_BOT_CLIENT_PRIVATE_API_RATE_LIMIT_PER_HOUR = 20
+        headers = {"Authorization": f"Bearer {'p' * 32}"}
+        expected_http_statuses = {
+            "added": 201,
+            "exists_rules": 200,
+            "exists_geosite": 200,
+            "ignored_cn": 200,
+            "rejected_policy": 200,
+            "invalid_domain": 400,
+        }
+
+        for status, expected_http_status in expected_http_statuses.items():
+            with self.subTest(status=status):
+                self.handler.submit_rule_bot_client_domain.return_value = {
+                    "status": status,
+                    "domain": "example.com",
+                }
+                response = await self.client.post(
+                    self.listener.path,
+                    headers=headers,
+                    json={"version": 1, "domain": "example.com"},
+                )
+                self.assertEqual(response.status, expected_http_status)
+                self.assertEqual((await response.json())["status"], status)
+
     async def test_community_api_uses_opaque_token_subject(self):
-        self.handler.matchscope_token_service = SimpleNamespace(
+        self.handler.rule_bot_client_token_service = SimpleNamespace(
             verify=AsyncMock(return_value="opaque-random-subject")
         )
         listener = ListenerConfig(
@@ -221,7 +247,7 @@ class TestMatchScopeAPI(unittest.IsolatedAsyncioTestCase):
             host="127.0.0.1",
             port=0,
             path="/api/hidden-community-path",
-            source="matchscope_community",
+            source="rule_bot_client_community",
         )
         client = TestClient(TestServer(self.api._build_app(listener)))
         await client.start_server()
@@ -232,34 +258,34 @@ class TestMatchScopeAPI(unittest.IsolatedAsyncioTestCase):
                 json={"version": 1, "domain": "example.com"},
             )
             self.assertEqual(response.status, 201)
-            self.handler.submit_matchscope_domain.assert_awaited_with(
+            self.handler.submit_rule_bot_client_domain.assert_awaited_with(
                 "example.com",
-                source="matchscope_community",
-                rate_key=("matchscope_community:adds", "opaque-random-subject"),
+                source="rule_bot_client_community",
+                rate_key=("rule_bot_client_community:adds", "opaque-random-subject"),
                 max_adds=2,
             )
         finally:
             await client.close()
 
 
-class TestMatchScopeSubmission(unittest.IsolatedAsyncioTestCase):
-    def test_main_menu_button_follows_public_api_switch(self):
+class TestRuleBotClientSubmission(unittest.IsolatedAsyncioTestCase):
+    def test_main_menu_button_follows_community_api_switch(self):
         manager = HandlerManager.__new__(HandlerManager)
-        manager.config = SimpleNamespace(MATCHSCOPE_PUBLIC_API_ENABLED=False)
+        manager.config = SimpleNamespace(RULE_BOT_CLIENT_COMMUNITY_API_ENABLED=False)
         disabled_keyboard = manager._build_main_menu_keyboard().inline_keyboard
         disabled_labels = [
             button.text
             for row in disabled_keyboard
             for button in row
         ]
-        manager.config.MATCHSCOPE_PUBLIC_API_ENABLED = True
+        manager.config.RULE_BOT_CLIENT_COMMUNITY_API_ENABLED = True
         enabled_labels = [
             button.text
             for row in manager._build_main_menu_keyboard().inline_keyboard
             for button in row
         ]
-        self.assertNotIn("🔗 MatchScope", disabled_labels)
-        self.assertIn("🔗 MatchScope", enabled_labels)
+        self.assertNotIn("🔗 Rule-Bot Client", disabled_labels)
+        self.assertIn("🔗 Rule-Bot Client", enabled_labels)
         self.assertEqual(
             [[button.text for button in row] for row in disabled_keyboard],
             [
@@ -273,15 +299,15 @@ class TestMatchScopeSubmission(unittest.IsolatedAsyncioTestCase):
         manager = HandlerManager.__new__(HandlerManager)
         manager.check_and_add_domain_auto = AsyncMock()
 
-        cn = await manager.submit_matchscope_domain(
+        cn = await manager.submit_rule_bot_client_domain(
             "www.example.cn",
-            source="matchscope_private",
+            source="rule_bot_client_private",
             rate_key=("private", 0),
             max_adds=10,
         )
-        invalid = await manager.submit_matchscope_domain(
+        invalid = await manager.submit_rule_bot_client_domain(
             "not a domain",
-            source="matchscope_private",
+            source="rule_bot_client_private",
             rate_key=("private", 0),
             max_adds=10,
         )
@@ -295,18 +321,18 @@ class TestMatchScopeSubmission(unittest.IsolatedAsyncioTestCase):
         manager.user_states = {}
         manager._pending_actions = {}
         manager.MAX_USER_STATES = 4096
-        manager.matchscope_token_service = SimpleNamespace(
+        manager.rule_bot_client_token_service = SimpleNamespace(
             has_current_consent=AsyncMock(return_value=False)
         )
         manager.group_service = SimpleNamespace(
             check_user_in_group=AsyncMock(return_value=True)
         )
-        manager._show_matchscope_privacy = AsyncMock()
+        manager._show_rule_bot_client_privacy = AsyncMock()
         query = MagicMock()
 
-        await manager._issue_matchscope_token(query, 42)
+        await manager._issue_rule_bot_client_token(query, 42)
 
-        manager._show_matchscope_privacy.assert_awaited_once_with(query, 42)
+        manager._show_rule_bot_client_privacy.assert_awaited_once_with(query, 42)
         manager.group_service.check_user_in_group.assert_not_awaited()
 
     async def test_subdomain_is_reduced_before_shared_business_logic(self):
@@ -315,19 +341,19 @@ class TestMatchScopeSubmission(unittest.IsolatedAsyncioTestCase):
             return_value={"action": "exists", "reason": "rules"}
         )
 
-        result = await manager.submit_matchscope_domain(
+        result = await manager.submit_rule_bot_client_domain(
             "https://a.b.example.com/path",
-            source="matchscope_community",
-            rate_key=("public", 42),
+            source="rule_bot_client_community",
+            rate_key=("rule_bot_client_community", 42),
             max_adds=50,
         )
 
         self.assertEqual(result, {"status": "exists_rules", "domain": "example.com"})
         manager.check_and_add_domain_auto.assert_awaited_once_with(
             "example.com",
-            "MatchScope Community",
-            user_id=("public", 42),
-            source="matchscope_community",
+            "Rule-Bot Client Community",
+            user_id=("rule_bot_client_community", 42),
+            source="rule_bot_client_community",
             max_adds=50,
         )
 
@@ -353,14 +379,26 @@ class TestMatchScopeSubmission(unittest.IsolatedAsyncioTestCase):
         )
 
         result = await manager.check_and_add_domain_auto(
-            "example.com", "MatchScope", user_id=("private", 0)
+            "example.com", "Rule-Bot Client", user_id=("private", 0)
         )
 
         self.assertEqual(result["action"], "exists")
         self.assertEqual(result["reason"], "rules")
 
 
-class TestMatchScopeCommitIdentity(unittest.IsolatedAsyncioTestCase):
+class TestRuleBotClientCommitIdentity(unittest.IsolatedAsyncioTestCase):
+    def test_rule_bot_client_comments_are_recognized_as_managed(self):
+        self.assertTrue(
+            GitHubService._is_managed_rule_comment(
+                "# add by Rule-Bot Client / Date: 2026-08-07 12:00:00"
+            )
+        )
+        self.assertTrue(
+            GitHubService._is_managed_rule_comment(
+                "# add by Rule-Bot Client Community / Date: 2026-08-07 12:00:00"
+            )
+        )
+
     async def test_duplicate_write_is_marked_idempotent(self):
         service = GitHubService.__new__(GitHubService)
         service.config = SimpleNamespace(
@@ -377,14 +415,14 @@ class TestMatchScopeCommitIdentity(unittest.IsolatedAsyncioTestCase):
         )
 
         result = await service._add_domain_to_rules_unlocked(
-            "example.com", "MatchScope", source="matchscope_private"
+            "example.com", "Rule-Bot Client", source="rule_bot_client_private"
         )
 
         self.assertFalse(result["success"])
         self.assertTrue(result["already_exists"])
         service.repo.update_file.assert_not_called()
 
-    async def test_private_submission_has_matchscope_commit_and_comment(self):
+    async def test_private_submission_has_rule_bot_client_commit_and_comment(self):
         service = GitHubService.__new__(GitHubService)
         service.config = SimpleNamespace(
             DIRECT_RULE_FILE="rules.list",
@@ -407,16 +445,16 @@ class TestMatchScopeCommitIdentity(unittest.IsolatedAsyncioTestCase):
         service._analysis_cache = MagicMock()
 
         result = await service._add_domain_to_rules_unlocked(
-            "example.com", "MatchScope", source="matchscope_private"
+            "example.com", "Rule-Bot Client", source="rule_bot_client_private"
         )
 
         self.assertTrue(result["success"])
         update_args = service.repo.update_file.call_args.args
         self.assertEqual(
             update_args[1],
-            "feat(rules): add direct domain example.com by Rule-Bot (from MatchScope)",
+            "feat(rules): add direct domain example.com by Rule-Bot (from Rule-Bot Client)",
         )
-        self.assertIn("# add by MatchScope / Date:", update_args[2])
+        self.assertIn("# add by Rule-Bot Client / Date:", update_args[2])
         self.assertIn("DOMAIN-SUFFIX,example.com", update_args[2])
 
     async def test_community_submission_has_anonymous_source_identity(self):
@@ -440,17 +478,17 @@ class TestMatchScopeCommitIdentity(unittest.IsolatedAsyncioTestCase):
 
         result = await service._add_domain_to_rules_unlocked(
             "example.net",
-            "MatchScope Community",
-            source="matchscope_community",
+            "Rule-Bot Client Community",
+            source="rule_bot_client_community",
         )
 
         self.assertTrue(result["success"])
         update_args = service.repo.update_file.call_args.args
         self.assertEqual(
             update_args[1],
-            "feat(rules): add direct domain example.net by Rule-Bot (from MatchScope Community)",
+            "feat(rules): add direct domain example.net by Rule-Bot (from Rule-Bot Client Community)",
         )
-        self.assertIn("# add by MatchScope Community / Date:", update_args[2])
+        self.assertIn("# add by Rule-Bot Client Community / Date:", update_args[2])
         self.assertNotRegex(
             update_args[2],
             r"(?:user|Admin):\s*42\b",

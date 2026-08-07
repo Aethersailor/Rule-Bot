@@ -19,7 +19,7 @@ from .handlers import HandlerManager, GroupHandler
 from .healthcheck import HEALTH_PATH
 from .update_processor import PerUserUpdateProcessor
 from .utils.metrics import EXPORTER
-from .services.matchscope_api import MatchScopeAPIServer
+from .services.rule_bot_client_api import RuleBotClientAPIServer
 
 
 class RuleBot:
@@ -31,7 +31,7 @@ class RuleBot:
         self.app: Optional[Application] = None
         self.handler_manager = None  # 延迟初始化
         self.group_handler = None  # 群组处理器
-        self.matchscope_api = None
+        self.rule_bot_client_api = None
         self._metrics_task = None
         self._heartbeat_task = None
 
@@ -52,9 +52,9 @@ class RuleBot:
     async def stop(self):
         """停止机器人"""
         logger.info("正在停止机器人...")
-        if self.matchscope_api:
-            await self.matchscope_api.stop()
-            self.matchscope_api = None
+        if self.rule_bot_client_api:
+            await self.rule_bot_client_api.stop()
+            self.rule_bot_client_api = None
         if self.handler_manager:
             await self.handler_manager.stop()
         if self._metrics_task:
@@ -104,10 +104,10 @@ class RuleBot:
             # 初始化处理器管理器（需要 app 实例）
             self.handler_manager = HandlerManager(self.config, self.data_manager, self.app)
             if (
-                self.config.MATCHSCOPE_PRIVATE_API_ENABLED
-                or self.config.MATCHSCOPE_PUBLIC_API_ENABLED
+                self.config.RULE_BOT_CLIENT_PRIVATE_API_ENABLED
+                or self.config.RULE_BOT_CLIENT_COMMUNITY_API_ENABLED
             ):
-                self.matchscope_api = MatchScopeAPIServer(
+                self.rule_bot_client_api = RuleBotClientAPIServer(
                     self.config, self.handler_manager
                 )
             
@@ -122,8 +122,8 @@ class RuleBot:
 
             async with self.app:
                 await self.handler_manager.start()  # 显式启动服务（如 DNS Session）
-                if self.matchscope_api:
-                    await self.matchscope_api.start()
+                if self.rule_bot_client_api:
+                    await self.rule_bot_client_api.start()
                 try:
                     await self.app.bot.set_my_commands(self._build_bot_commands())
                 except Exception as e:

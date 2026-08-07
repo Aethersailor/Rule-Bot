@@ -55,7 +55,7 @@ class GitHubService:
         return " / date: " in normalized and (
             "add by telegram user:" in normalized
             or "force add by admin:" in normalized
-            or "add by matchscope" in normalized
+            or "add by rule-bot client" in normalized
         )
 
     def _target_branch(self) -> Optional[str]:
@@ -298,8 +298,8 @@ class GitHubService:
             description = validate_single_line_text(description, 20)
             allowed_sources = {
                 "telegram",
-                "matchscope_private",
-                "matchscope_community",
+                "rule_bot_client_private",
+                "rule_bot_client_community",
             }
             if source not in allowed_sources:
                 return {"success": False, "error": "无效的规则提交来源"}
@@ -375,10 +375,10 @@ class GitHubService:
                             comment = f"# {description} / force add by Admin: {user_name} / Date: {current_date}"
                         else:
                             comment = f"# force add by Admin: {user_name} / Date: {current_date}"
-                    elif source == "matchscope_private":
-                        comment = f"# add by MatchScope / Date: {current_date}"
-                    elif source == "matchscope_community":
-                        comment = f"# add by MatchScope Community / Date: {current_date}"
+                    elif source == "rule_bot_client_private":
+                        comment = f"# add by Rule-Bot Client / Date: {current_date}"
+                    elif source == "rule_bot_client_community":
+                        comment = f"# add by Rule-Bot Client Community / Date: {current_date}"
                     else:
                         if description:
                             comment = f"# {description} / add by Telegram user: {user_name} / Date: {current_date}"
@@ -400,15 +400,15 @@ class GitHubService:
                             f"feat(rules): force add direct domain {domain} by Admin "
                             f"(Telegram user: {user_name})"
                         )
-                    elif source == "matchscope_private":
+                    elif source == "rule_bot_client_private":
                         commit_title = (
                             f"feat(rules): add direct domain {domain} by Rule-Bot "
-                            "(from MatchScope)"
+                            "(from Rule-Bot Client)"
                         )
-                    elif source == "matchscope_community":
+                    elif source == "rule_bot_client_community":
                         commit_title = (
                             f"feat(rules): add direct domain {domain} by Rule-Bot "
-                            "(from MatchScope Community)"
+                            "(from Rule-Bot Client Community)"
                         )
                     else:
                         commit_title = f"feat(rules): add direct domain {domain} by Telegram Bot (Telegram user: {user_name})"

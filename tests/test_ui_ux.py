@@ -42,14 +42,14 @@ def _assert_compact_page(case, text, *, max_lines=22, max_width=60):
 
 
 class TestVisibleCopy(unittest.TestCase):
-    def _manager(self, matchscope_enabled=True):
+    def _manager(self, rule_bot_client_enabled=True):
         manager = HandlerManager.__new__(HandlerManager)
         manager.config = SimpleNamespace(
             GITHUB_REPO="Aethersailor/Custom_OpenClash_Rules",
             DIRECT_RULE_FILE="rule/Custom_Clash_Direct.list",
             PROXY_RULE_FILE="rule/Custom_Clash_Proxy.list",
-            MATCHSCOPE_PUBLIC_API_ENABLED=matchscope_enabled,
-            ANNOUNCEMENT_GROUP_ID=-100123 if matchscope_enabled else None,
+            RULE_BOT_CLIENT_COMMUNITY_API_ENABLED=rule_bot_client_enabled,
+            ANNOUNCEMENT_GROUP_ID=-100123 if rule_bot_client_enabled else None,
         )
         manager.MAX_DETAIL_LINES = 4
         manager.MAX_DETAIL_LINE_LENGTH = 56
@@ -79,7 +79,7 @@ class TestVisibleCopy(unittest.TestCase):
         self.assertNotIn("•", text)
         self.assertIn("Aethersailor/Custom", text)
         self.assertIn("➖ 删除规则（暂未开放）", labels)
-        self.assertIn("🔗 MatchScope", labels)
+        self.assertIn("🔗 Rule-Bot Client", labels)
         self.assertIn("ℹ️ 使用帮助", labels)
         self.assertEqual(callbacks["➖ 删除规则（暂未开放）"], "delete_rule")
         self.assertEqual(len(keyboard.inline_keyboard), 3)
@@ -95,7 +95,7 @@ class TestVisibleCopy(unittest.TestCase):
         for command in ("/query", "/add", "/id", "/help", "/skip"):
             self.assertIn(command, text)
         self.assertIn("群聊", text)
-        self.assertIn("MatchScope", text)
+        self.assertIn("Rule-Bot Client", text)
         self.assertIn("删除规则", text)
         self.assertNotIn(manager.config.GITHUB_REPO, text)
         self.assertEqual(_button_labels(keyboard), ["📂 查看公开仓库", "🏠 返回首页"])
@@ -153,18 +153,18 @@ class TestVisibleCopy(unittest.TestCase):
             self.assertLessEqual(_display_width(line), 60)
         self.assertNotIn("   •", details + matches)
 
-    def test_matchscope_pages_use_sections_instead_of_text_walls(self):
+    def test_rule_bot_client_pages_use_sections_instead_of_text_walls(self):
         manager = self._manager()
 
-        access = manager._build_matchscope_access_text(
+        access = manager._build_rule_bot_client_access_text(
             "有效", "2026-08-07 10:00 UTC"
         )
-        privacy = manager._build_matchscope_privacy_text(False)
+        privacy = manager._build_rule_bot_client_privacy_text(False)
 
         _assert_compact_page(self, access, max_lines=13)
         _assert_compact_page(self, privacy, max_lines=24, max_width=62)
         for heading in (
-            "📱 *官方 MatchScope 客户端*",
+            "📱 *Rule-Bot Client*",
             "🚫 *默认不会主动上报*",
             "👤 *账号关联*",
             "🌍 *公开范围*",
@@ -269,9 +269,9 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
             GITHUB_REPO="Aethersailor/Custom_OpenClash_Rules",
             DIRECT_RULE_FILE="rule/Custom_Clash_Direct.list",
             PROXY_RULE_FILE="rule/Custom_Clash_Proxy.list",
-            MATCHSCOPE_PUBLIC_API_ENABLED=True,
-            MATCHSCOPE_PUBLIC_BASE_URL="https://example.test",
-            MATCHSCOPE_PUBLIC_API_PATH="/community",
+            RULE_BOT_CLIENT_COMMUNITY_API_ENABLED=True,
+            RULE_BOT_CLIENT_COMMUNITY_API_BASE_URL="https://example.test",
+            RULE_BOT_CLIENT_COMMUNITY_API_PATH="/community",
             ANNOUNCEMENT_GROUP_ID=-100123,
             ADMIN_USER_IDS=set(),
         )
@@ -859,15 +859,15 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
 
     async def test_privacy_copy_is_conditional_and_names_third_party_clients(self):
         manager = self._stateful_manager()
-        manager.matchscope_token_service = SimpleNamespace(
+        manager.rule_bot_client_token_service = SimpleNamespace(
             has_current_consent=AsyncMock(return_value=False)
         )
         query = SimpleNamespace(edit_message_text=AsyncMock())
 
-        await manager._show_matchscope_privacy(query, 42)
+        await manager._show_rule_bot_client_privacy(query, 42)
 
         text = query.edit_message_text.await_args.args[0]
-        self.assertIn("官方 MatchScope", text)
+        self.assertIn("Rule-Bot Client Community 隐私说明", text)
         self.assertIn("第三方", text)
         self.assertIn("若入口经过", text)
         self.assertNotIn("公网连接会让 Cloudflare", text)
@@ -877,7 +877,7 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
 
     async def test_reissue_revoke_and_withdraw_require_confirmation(self):
         manager = self._stateful_manager()
-        manager.matchscope_token_service = SimpleNamespace(
+        manager.rule_bot_client_token_service = SimpleNamespace(
             has_current_consent=AsyncMock(return_value=True),
             status=AsyncMock(
                 return_value={"enabled": True, "expires_at": int(time.time()) + 3600}
@@ -891,24 +891,24 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
         )
         query = SimpleNamespace(edit_message_text=AsyncMock())
 
-        await manager._issue_matchscope_token(query, 42)
+        await manager._issue_rule_bot_client_token(query, 42)
         issue_text = query.edit_message_text.await_args.args[0]
         self.assertIn("旧 Token", issue_text)
-        manager.matchscope_token_service.issue.assert_not_awaited()
+        manager.rule_bot_client_token_service.issue.assert_not_awaited()
 
-        await manager._revoke_matchscope_token(query, 42)
+        await manager._revoke_rule_bot_client_token(query, 42)
         revoke_text = query.edit_message_text.await_args.args[0]
         self.assertIn("吊销当前 Token", revoke_text)
         revoke_markup = query.edit_message_text.await_args.kwargs["reply_markup"]
         self.assertIn("🚫 确认吊销", _button_labels(revoke_markup))
-        manager.matchscope_token_service.revoke.assert_not_awaited()
+        manager.rule_bot_client_token_service.revoke.assert_not_awaited()
 
-        await manager._withdraw_matchscope_privacy(query, 42)
+        await manager._withdraw_rule_bot_client_privacy(query, 42)
         withdraw_text = query.edit_message_text.await_args.args[0]
         self.assertIn("撤回隐私同意", withdraw_text)
         withdraw_markup = query.edit_message_text.await_args.kwargs["reply_markup"]
         self.assertIn("🚫 确认撤回并吊销", _button_labels(withdraw_markup))
-        manager.matchscope_token_service.withdraw_consent.assert_not_awaited()
+        manager.rule_bot_client_token_service.withdraw_consent.assert_not_awaited()
 
     async def test_membership_page_has_join_and_force_refresh_recovery(self):
         manager = self._stateful_manager()
@@ -1239,9 +1239,9 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(manager.user_states[42]["state"], "waiting_add_domain")
 
-    async def test_matchscope_access_hides_long_endpoint_in_copy_button(self):
+    async def test_rule_bot_client_access_hides_long_endpoint_in_copy_button(self):
         manager = self._stateful_manager()
-        manager.matchscope_token_service = SimpleNamespace(
+        manager.rule_bot_client_token_service = SimpleNamespace(
             status=AsyncMock(
                 return_value={"enabled": True, "expires_at": int(time.time()) + 3600}
             ),
@@ -1249,7 +1249,7 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
         )
         query = SimpleNamespace(edit_message_text=AsyncMock())
 
-        await manager._show_matchscope_access(query, 42)
+        await manager._show_rule_bot_client_access(query, 42)
 
         text = query.edit_message_text.await_args.args[0]
         markup = query.edit_message_text.await_args.kwargs["reply_markup"]
@@ -1270,7 +1270,7 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
         manager.group_service = SimpleNamespace(
             check_user_in_group=AsyncMock(return_value=True)
         )
-        manager.matchscope_token_service = SimpleNamespace(
+        manager.rule_bot_client_token_service = SimpleNamespace(
             issue=AsyncMock(
                 return_value={
                     "token": "secret-token",
@@ -1278,12 +1278,12 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
                 }
             )
         )
-        manager._show_matchscope_access = AsyncMock()
+        manager._show_rule_bot_client_access = AsyncMock()
         query = SimpleNamespace(
             message=SimpleNamespace(reply_text=AsyncMock()),
         )
 
-        await manager._perform_matchscope_issue(query, 42)
+        await manager._perform_rule_bot_client_issue(query, 42)
 
         text = query.message.reply_text.await_args.args[0]
         markup = query.message.reply_text.await_args.kwargs["reply_markup"]
@@ -1501,9 +1501,9 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
             manager.user_states[42]["state"], "waiting_add_domain"
         )
 
-    async def test_matchscope_reissue_confirmation_is_scoped_and_single_use(self):
+    async def test_rule_bot_client_reissue_confirmation_is_scoped_and_single_use(self):
         manager = self._stateful_manager()
-        manager.matchscope_token_service = SimpleNamespace(
+        manager.rule_bot_client_token_service = SimpleNamespace(
             has_current_consent=AsyncMock(return_value=True),
             status=AsyncMock(
                 return_value={"enabled": True, "expires_at": int(time.time()) + 3600}
@@ -1520,18 +1520,18 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
             message=SimpleNamespace(reply_text=AsyncMock()),
         )
 
-        await manager._issue_matchscope_token(query, 42)
+        await manager._issue_rule_bot_client_token(query, 42)
         markup = query.edit_message_text.await_args.kwargs["reply_markup"]
         callback_data = markup.inline_keyboard[0][0].callback_data
 
-        await manager._confirm_matchscope_issue(query, 99, callback_data)
-        manager.matchscope_token_service.issue.assert_not_awaited()
+        await manager._confirm_rule_bot_client_issue(query, 99, callback_data)
+        manager.rule_bot_client_token_service.issue.assert_not_awaited()
 
-        await manager._confirm_matchscope_issue(query, 42, callback_data)
-        manager.matchscope_token_service.issue.assert_awaited_once_with(42)
+        await manager._confirm_rule_bot_client_issue(query, 42, callback_data)
+        manager.rule_bot_client_token_service.issue.assert_awaited_once_with(42)
 
-        await manager._confirm_matchscope_issue(query, 42, callback_data)
-        self.assertEqual(manager.matchscope_token_service.issue.await_count, 1)
+        await manager._confirm_rule_bot_client_issue(query, 42, callback_data)
+        self.assertEqual(manager.rule_bot_client_token_service.issue.await_count, 1)
 
     async def test_invalid_description_preview_cannot_break_markdown(self):
         manager = self._stateful_manager()

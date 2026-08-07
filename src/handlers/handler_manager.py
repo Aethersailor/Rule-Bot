@@ -27,7 +27,7 @@ from ..services.geoip_service import GeoIPService
 from ..services.github_service import GitHubService
 from ..services.domain_checker import DomainChecker
 from ..services.group_service import GroupService
-from ..services.matchscope_token_service import MatchScopeTokenService
+from ..services.rule_bot_client_token_service import RuleBotClientTokenService
 from ..utils.domain_utils import normalize_domain, extract_second_level_domain, extract_second_level_domain_for_rules, is_cn_domain
 from ..utils.privacy import log_reference
 from ..utils.input_safety import validate_single_line_text
@@ -84,13 +84,13 @@ class HandlerManager:
         self.group_service = None
         if application:
             self.group_service = GroupService(config, application.bot)
-        self.matchscope_token_service = None
-        if config.MATCHSCOPE_PUBLIC_API_ENABLED:
-            self.matchscope_token_service = MatchScopeTokenService(
-                config.MATCHSCOPE_TOKEN_DATABASE
-                or (data_manager.data_dir / "matchscope_tokens.sqlite3"),
-                config.MATCHSCOPE_TOKEN_SIGNING_KEY,
-                config.MATCHSCOPE_TOKEN_TTL_DAYS,
+        self.rule_bot_client_token_service = None
+        if config.RULE_BOT_CLIENT_COMMUNITY_API_ENABLED:
+            self.rule_bot_client_token_service = RuleBotClientTokenService(
+                config.RULE_BOT_CLIENT_COMMUNITY_TOKEN_DATABASE
+                or (data_manager.data_dir / "rule_bot_client_tokens.sqlite3"),
+                config.RULE_BOT_CLIENT_COMMUNITY_TOKEN_SIGNING_KEY,
+                config.RULE_BOT_CLIENT_COMMUNITY_TOKEN_TTL_DAYS,
             )
 
     async def start(self):
@@ -285,7 +285,7 @@ class HandlerManager:
             }
         return self.user_states[user_id]
 
-    async def submit_matchscope_domain(
+    async def submit_rule_bot_client_domain(
         self,
         domain_input: str,
         *,
@@ -305,7 +305,7 @@ class HandlerManager:
 
         result = await self.check_and_add_domain_auto(
             domain,
-            "MatchScope Community" if source == "matchscope_community" else "MatchScope",
+            "Rule-Bot Client Community" if source == "rule_bot_client_community" else "Rule-Bot Client",
             user_id=rate_key,
             source=source,
             max_adds=max_adds,
@@ -909,10 +909,10 @@ class HandlerManager:
                 InlineKeyboardButton("➕ 添加直连", callback_data="add_direct_rule"),
             ],
         ]
-        if self.config.MATCHSCOPE_PUBLIC_API_ENABLED:
+        if self.config.RULE_BOT_CLIENT_COMMUNITY_API_ENABLED:
             keyboard.append(
                 [
-                    InlineKeyboardButton("🔗 MatchScope", callback_data="matchscope_access"),
+                    InlineKeyboardButton("🔗 Rule-Bot Client", callback_data="rule_bot_client_access"),
                     InlineKeyboardButton("ℹ️ 使用帮助", callback_data="help"),
                 ]
             )
@@ -961,11 +961,11 @@ class HandlerManager:
             lines.extend(
                 ["", "👥 *群聊使用*", "仅在管理员授权的群组中生效。"]
             )
-        if getattr(self.config, "MATCHSCOPE_PUBLIC_API_ENABLED", False):
+        if getattr(self.config, "RULE_BOT_CLIENT_COMMUNITY_API_ENABLED", False):
             lines.extend(
                 [
                     "",
-                    "🔗 *MatchScope 社区接入*",
+                    "🔗 *Rule-Bot Client Community 接入*",
                     "从首页申请或管理个人 Token。",
                 ]
             )
@@ -1477,22 +1477,22 @@ class HandlerManager:
                 return
             self_service_callbacks = {
                 GroupService.MEMBERSHIP_RETRY_CALLBACK,
-                "matchscope_access",
-                "matchscope_issue",
-                "matchscope_revoke",
-                "matchscope_delete_credential",
-                "matchscope_privacy",
-                "matchscope_privacy_accept",
-                "matchscope_privacy_withdraw",
+                "rule_bot_client_access",
+                "rule_bot_client_issue",
+                "rule_bot_client_revoke",
+                "rule_bot_client_delete_credential",
+                "rule_bot_client_privacy",
+                "rule_bot_client_privacy_accept",
+                "rule_bot_client_privacy_withdraw",
             }
             is_self_service_callback = data in self_service_callbacks or data.startswith(
                 (
-                    "matchscope_issue_confirm|",
-                    "matchscope_revoke_confirm|",
-                    "matchscope_privacy_withdraw_confirm|",
+                    "rule_bot_client_issue_confirm|",
+                    "rule_bot_client_revoke_confirm|",
+                    "rule_bot_client_privacy_withdraw_confirm|",
                 )
             )
-            # MatchScope issuance performs its own fresh membership check;
+            # Rule-Bot Client issuance performs its own fresh membership check;
             # access, revocation and credential deletion remain available.
             if (
                 not is_self_service_callback
@@ -1522,26 +1522,26 @@ class HandlerManager:
                 await self._show_delete_not_supported(query, user_id)
             elif data == "help":
                 await self._show_help(query, user_id)
-            elif data == "matchscope_access":
-                await self._show_matchscope_access(query, user_id)
-            elif data == "matchscope_issue":
-                await self._issue_matchscope_token(query, user_id)
-            elif data == "matchscope_revoke":
-                await self._revoke_matchscope_token(query, user_id)
-            elif data.startswith("matchscope_issue_confirm|"):
-                await self._confirm_matchscope_issue(query, user_id, data)
-            elif data.startswith("matchscope_revoke_confirm|"):
-                await self._confirm_matchscope_revoke(query, user_id, data)
-            elif data == "matchscope_delete_credential":
+            elif data == "rule_bot_client_access":
+                await self._show_rule_bot_client_access(query, user_id)
+            elif data == "rule_bot_client_issue":
+                await self._issue_rule_bot_client_token(query, user_id)
+            elif data == "rule_bot_client_revoke":
+                await self._revoke_rule_bot_client_token(query, user_id)
+            elif data.startswith("rule_bot_client_issue_confirm|"):
+                await self._confirm_rule_bot_client_issue(query, user_id, data)
+            elif data.startswith("rule_bot_client_revoke_confirm|"):
+                await self._confirm_rule_bot_client_revoke(query, user_id, data)
+            elif data == "rule_bot_client_delete_credential":
                 await query.message.delete()
-            elif data == "matchscope_privacy":
-                await self._show_matchscope_privacy(query, user_id)
-            elif data == "matchscope_privacy_accept":
-                await self._accept_matchscope_privacy(query, user_id)
-            elif data == "matchscope_privacy_withdraw":
-                await self._withdraw_matchscope_privacy(query, user_id)
-            elif data.startswith("matchscope_privacy_withdraw_confirm|"):
-                await self._confirm_matchscope_privacy_withdraw(query, user_id, data)
+            elif data == "rule_bot_client_privacy":
+                await self._show_rule_bot_client_privacy(query, user_id)
+            elif data == "rule_bot_client_privacy_accept":
+                await self._accept_rule_bot_client_privacy(query, user_id)
+            elif data == "rule_bot_client_privacy_withdraw":
+                await self._withdraw_rule_bot_client_privacy(query, user_id)
+            elif data.startswith("rule_bot_client_privacy_withdraw_confirm|"):
+                await self._confirm_rule_bot_client_privacy_withdraw(query, user_id, data)
             elif data.startswith("query_details|"):
                 await self._show_query_result_page(
                     query, user_id, data, detail=True
@@ -1635,28 +1635,28 @@ class HandlerManager:
             disable_web_page_preview=True,
         )
 
-    def _matchscope_endpoint(self) -> str:
+    def _rule_bot_client_endpoint(self) -> str:
         return (
-            f"{self.config.MATCHSCOPE_PUBLIC_BASE_URL}"
-            f"{self.config.MATCHSCOPE_PUBLIC_API_PATH}"
+            f"{self.config.RULE_BOT_CLIENT_COMMUNITY_API_BASE_URL}"
+            f"{self.config.RULE_BOT_CLIENT_COMMUNITY_API_PATH}"
         )
 
     @staticmethod
-    def _matchscope_token_is_active(status: Optional[dict]) -> bool:
+    def _rule_bot_client_token_is_active(status: Optional[dict]) -> bool:
         return bool(
             status
             and status.get("enabled")
             and int(status.get("expires_at", 0)) > int(time.time())
         )
 
-    def _build_matchscope_access_text(
+    def _build_rule_bot_client_access_text(
         self, status_text: str, expires: Optional[str] = None
     ) -> str:
         lines = [
-            "🔗 *MatchScope 社区接入*",
+            "🔗 *Rule-Bot Client Community 接入*",
             "",
             "已验证的群组成员可申请独立 Token，",
-            "用于从 MatchScope 客户端提交待判断域名。",
+            "用于从 Rule-Bot Client 客户端提交待判断域名。",
             "",
             "🔐 *凭据说明*",
             "Token 仅在签发时显示一次，请妥善保存。",
@@ -1670,10 +1670,10 @@ class HandlerManager:
         return "\n".join(lines)
 
     @staticmethod
-    def _build_matchscope_privacy_text(consented: bool) -> str:
+    def _build_rule_bot_client_privacy_text(consented: bool) -> str:
         return (
-            "🛡️ *MatchScope 隐私说明*\n\n"
-            "📱 *官方 MatchScope 客户端*\n"
+            "🛡️ *Rule-Bot Client Community 隐私说明*\n\n"
+            "📱 *Rule-Bot Client*\n"
             "默认只上报用于规则判断的可注册域名。\n"
             "本地会先去重，并排除 `.cn` 与排除项。\n\n"
             "🚫 *默认不会主动上报*\n"
@@ -1690,19 +1690,19 @@ class HandlerManager:
             f"📌 当前状态：*{'已同意' if consented else '尚未同意'}*"
         )
 
-    async def _show_matchscope_access(self, query, user_id: int):
+    async def _show_rule_bot_client_access(self, query, user_id: int):
         """Show self-service token status without exposing the credential."""
         self._reset_user_flow(user_id)
-        if not self.matchscope_token_service:
+        if not self.rule_bot_client_token_service:
             await query.edit_message_text(
-                "ℹ️ *MatchScope 社区接入*\n\n当前暂未开放。",
+                "ℹ️ *Rule-Bot Client Community 接入*\n\n当前暂未开放。",
                 reply_markup=self._recovery_keyboard(),
                 parse_mode="Markdown",
             )
             return
-        status = await self.matchscope_token_service.status(user_id)
-        token_active = self._matchscope_token_is_active(status)
-        consented = await self.matchscope_token_service.has_current_consent(user_id)
+        status = await self.rule_bot_client_token_service.status(user_id)
+        token_active = self._rule_bot_client_token_is_active(status)
+        consented = await self.rule_bot_client_token_service.has_current_consent(user_id)
         active = token_active and consented
         status_text = "尚未签发或已失效"
         expires = None
@@ -1718,48 +1718,48 @@ class HandlerManager:
         keyboard = []
         if consented:
             keyboard.append(
-                [InlineKeyboardButton(issue_label, callback_data="matchscope_issue")]
+                [InlineKeyboardButton(issue_label, callback_data="rule_bot_client_issue")]
             )
         keyboard.append(
-            [InlineKeyboardButton("🛡️ 隐私说明", callback_data="matchscope_privacy")]
+            [InlineKeyboardButton("🛡️ 隐私说明", callback_data="rule_bot_client_privacy")]
         )
         if token_active:
             keyboard.append(
                 [
                     InlineKeyboardButton(
                         "📋 复制接口入口",
-                        copy_text=CopyTextButton(text=self._matchscope_endpoint()),
+                        copy_text=CopyTextButton(text=self._rule_bot_client_endpoint()),
                     )
                 ]
             )
         if token_active:
             keyboard.append(
-                [InlineKeyboardButton("🚫 吊销当前 Token", callback_data="matchscope_revoke")]
+                [InlineKeyboardButton("🚫 吊销当前 Token", callback_data="rule_bot_client_revoke")]
             )
         keyboard.append([InlineKeyboardButton("🏠 返回首页", callback_data="main_menu")])
         await query.edit_message_text(
-            self._build_matchscope_access_text(status_text, expires),
+            self._build_rule_bot_client_access_text(status_text, expires),
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown",
         )
 
-    async def _show_matchscope_privacy(self, query, user_id: int):
+    async def _show_rule_bot_client_privacy(self, query, user_id: int):
         """Explain the community ingress privacy boundary before consent."""
         self._reset_user_flow(user_id)
-        if not self.matchscope_token_service:
+        if not self.rule_bot_client_token_service:
             await query.edit_message_text(
-                "ℹ️ *MatchScope 社区接入*\n\n当前暂未开放。",
+                "ℹ️ *Rule-Bot Client Community 接入*\n\n当前暂未开放。",
                 reply_markup=self._recovery_keyboard(),
                 parse_mode="Markdown",
             )
             return
-        consented = await self.matchscope_token_service.has_current_consent(user_id)
+        consented = await self.rule_bot_client_token_service.has_current_consent(user_id)
         keyboard = []
         if not consented:
             keyboard.append(
                 [
                     InlineKeyboardButton(
-                        "✅ 同意隐私说明", callback_data="matchscope_privacy_accept"
+                        "✅ 同意隐私说明", callback_data="rule_bot_client_privacy_accept"
                     )
                 ]
             )
@@ -1768,7 +1768,7 @@ class HandlerManager:
                 [
                     InlineKeyboardButton(
                         "🚫 撤回同意并吊销 Token",
-                        callback_data="matchscope_privacy_withdraw",
+                        callback_data="rule_bot_client_privacy_withdraw",
                     )
                 ]
             )
@@ -1780,37 +1780,37 @@ class HandlerManager:
                         url="https://github.com/Aethersailor/Rule-Bot/blob/master/PRIVACY.md",
                     )
                 ],
-                [InlineKeyboardButton("↩️ 返回接入页", callback_data="matchscope_access")],
+                [InlineKeyboardButton("↩️ 返回接入页", callback_data="rule_bot_client_access")],
             ]
         )
         await query.edit_message_text(
-            self._build_matchscope_privacy_text(consented),
+            self._build_rule_bot_client_privacy_text(consented),
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown",
         )
 
-    async def _accept_matchscope_privacy(self, query, user_id: int):
-        if not self.matchscope_token_service:
+    async def _accept_rule_bot_client_privacy(self, query, user_id: int):
+        if not self.rule_bot_client_token_service:
             await query.edit_message_text(
-                "ℹ️ *MatchScope 社区接入*\n\n当前暂未开放。",
+                "ℹ️ *Rule-Bot Client Community 接入*\n\n当前暂未开放。",
                 reply_markup=self._recovery_keyboard(),
                 parse_mode="Markdown",
             )
             return
-        await self.matchscope_token_service.consent(user_id)
-        await self._show_matchscope_access(query, user_id)
+        await self.rule_bot_client_token_service.consent(user_id)
+        await self._show_rule_bot_client_access(query, user_id)
 
-    async def _withdraw_matchscope_privacy(self, query, user_id: int):
+    async def _withdraw_rule_bot_client_privacy(self, query, user_id: int):
         self._reset_user_flow(user_id)
-        if not self.matchscope_token_service:
+        if not self.rule_bot_client_token_service:
             await query.edit_message_text(
-                "ℹ️ *MatchScope 社区接入*\n\n当前暂未开放。",
+                "ℹ️ *Rule-Bot Client Community 接入*\n\n当前暂未开放。",
                 reply_markup=self._recovery_keyboard(),
                 parse_mode="Markdown",
             )
             return
         token = self.create_pending_action(
-            user_id, "matchscope_privacy_withdraw", confirmed=True
+            user_id, "rule_bot_client_privacy_withdraw", confirmed=True
         )
         await query.edit_message_text(
             "⚠️ *撤回隐私同意？*\n\n"
@@ -1821,53 +1821,53 @@ class HandlerManager:
                     [
                         InlineKeyboardButton(
                             "🚫 确认撤回并吊销",
-                            callback_data=f"matchscope_privacy_withdraw_confirm|{token}",
+                            callback_data=f"rule_bot_client_privacy_withdraw_confirm|{token}",
                         )
                     ],
-                    [InlineKeyboardButton("↩️ 取消", callback_data="matchscope_privacy")],
+                    [InlineKeyboardButton("↩️ 取消", callback_data="rule_bot_client_privacy")],
                 ]
             ),
             parse_mode="Markdown",
         )
 
-    async def _confirm_matchscope_privacy_withdraw(
+    async def _confirm_rule_bot_client_privacy_withdraw(
         self, query, user_id: int, data: str
     ):
         token = data.split("|", 1)[1] if "|" in data else ""
         action = self.get_pending_action(
-            user_id, token, "matchscope_privacy_withdraw", consume=True
+            user_id, token, "rule_bot_client_privacy_withdraw", consume=True
         )
         if not action:
             await query.edit_message_text(
                 "⌛ *确认已过期*\n\n"
                 "隐私同意和 Token 均未更改。",
                 reply_markup=self._recovery_keyboard(
-                    "matchscope_privacy", "🛡️ 返回隐私说明"
+                    "rule_bot_client_privacy", "🛡️ 返回隐私说明"
                 ),
                 parse_mode="Markdown",
             )
             return
-        await self.matchscope_token_service.withdraw_consent(user_id)
+        await self.rule_bot_client_token_service.withdraw_consent(user_id)
         await query.edit_message_text(
             "🚫 *隐私同意已撤回*\n\n"
-            "🔐 当前 MatchScope Token 已同时吊销。\n"
+            "🔐 当前 Rule-Bot Client Community Token 已同时吊销。\n"
             "既有公开规则未被删除或修改。",
             reply_markup=self._recovery_keyboard(
-                "matchscope_access", "↩️ 返回接入页"
+                "rule_bot_client_access", "↩️ 返回接入页"
             ),
             parse_mode="Markdown",
         )
 
-    async def _issue_matchscope_token(self, query, user_id: int):
+    async def _issue_rule_bot_client_token(self, query, user_id: int):
         """Issue a token, requiring confirmation when an old token would be replaced."""
         self._reset_user_flow(user_id)
-        if not await self.matchscope_token_service.has_current_consent(user_id):
-            await self._show_matchscope_privacy(query, user_id)
+        if not await self.rule_bot_client_token_service.has_current_consent(user_id):
+            await self._show_rule_bot_client_privacy(query, user_id)
             return
-        status = await self.matchscope_token_service.status(user_id)
-        if self._matchscope_token_is_active(status):
+        status = await self.rule_bot_client_token_service.status(user_id)
+        if self._rule_bot_client_token_is_active(status):
             token = self.create_pending_action(
-                user_id, "matchscope_reissue", confirmed=True
+                user_id, "rule_bot_client_reissue", confirmed=True
             )
             await query.edit_message_text(
                 "⚠️ *重新签发 Token？*\n\n"
@@ -1878,37 +1878,37 @@ class HandlerManager:
                         [
                             InlineKeyboardButton(
                                 "🔄 确认重新签发",
-                                callback_data=f"matchscope_issue_confirm|{token}",
+                                callback_data=f"rule_bot_client_issue_confirm|{token}",
                             )
                         ],
-                        [InlineKeyboardButton("↩️ 取消", callback_data="matchscope_access")],
+                        [InlineKeyboardButton("↩️ 取消", callback_data="rule_bot_client_access")],
                     ]
                 ),
                 parse_mode="Markdown",
             )
             return
-        await self._perform_matchscope_issue(query, user_id)
+        await self._perform_rule_bot_client_issue(query, user_id)
 
-    async def _confirm_matchscope_issue(self, query, user_id: int, data: str):
+    async def _confirm_rule_bot_client_issue(self, query, user_id: int, data: str):
         token = data.split("|", 1)[1] if "|" in data else ""
         action = self.get_pending_action(
-            user_id, token, "matchscope_reissue", consume=True
+            user_id, token, "rule_bot_client_reissue", consume=True
         )
         if not action:
             await query.edit_message_text(
                 "⌛ *确认已过期*\n\n原 Token 未更改。",
                 reply_markup=self._recovery_keyboard(
-                    "matchscope_access", "↩️ 返回接入页"
+                    "rule_bot_client_access", "↩️ 返回接入页"
                 ),
                 parse_mode="Markdown",
             )
             return
-        if not await self.matchscope_token_service.has_current_consent(user_id):
-            await self._show_matchscope_privacy(query, user_id)
+        if not await self.rule_bot_client_token_service.has_current_consent(user_id):
+            await self._show_rule_bot_client_privacy(query, user_id)
             return
-        await self._perform_matchscope_issue(query, user_id)
+        await self._perform_rule_bot_client_issue(query, user_id)
 
-    async def _perform_matchscope_issue(self, query, user_id: int):
+    async def _perform_rule_bot_client_issue(self, query, user_id: int):
         """Freshly verify membership and deliver a one-time credential message."""
         membership = await self.group_service.check_user_in_group(
             user_id, force_refresh=True
@@ -1923,7 +1923,7 @@ class HandlerManager:
                     "请稍后重新申请 Token。"
                 )
                 reply_markup = self._recovery_keyboard(
-                    "matchscope_access", "↩️ 返回接入页"
+                    "rule_bot_client_access", "↩️ 返回接入页"
                 )
             await query.edit_message_text(
                 message,
@@ -1932,9 +1932,9 @@ class HandlerManager:
             )
             return
 
-        issued = await self.matchscope_token_service.issue(user_id)
+        issued = await self.rule_bot_client_token_service.issue(user_id)
         token = issued["token"]
-        endpoint = self._matchscope_endpoint()
+        endpoint = self._rule_bot_client_endpoint()
         expires = datetime.fromtimestamp(
             issued["expires_at"], timezone.utc
         ).strftime("%Y-%m-%d %H:%M UTC")
@@ -1951,13 +1951,13 @@ class HandlerManager:
                 [
                     InlineKeyboardButton(
                         "🗑️ 删除凭据消息",
-                        callback_data="matchscope_delete_credential",
+                        callback_data="rule_bot_client_delete_credential",
                     )
                 ],
             ]
         )
         await query.message.reply_text(
-            "🔐 *MatchScope 凭据已签发*\n\n"
+            "🔐 *Rule-Bot Client Community 凭据已签发*\n\n"
             "⚠️ 此凭据只显示一次，请勿转发或公开。\n\n"
             f"🌐 *接口入口*\n`{endpoint}`\n\n"
             f"🔑 *个人 Token*\n`{token}`\n\n"
@@ -1967,22 +1967,22 @@ class HandlerManager:
             reply_markup=keyboard,
             parse_mode="Markdown",
         )
-        await self._show_matchscope_access(query, user_id)
+        await self._show_rule_bot_client_access(query, user_id)
 
-    async def _revoke_matchscope_token(self, query, user_id: int):
+    async def _revoke_rule_bot_client_token(self, query, user_id: int):
         self._reset_user_flow(user_id)
-        status = await self.matchscope_token_service.status(user_id)
-        if not self._matchscope_token_is_active(status):
+        status = await self.rule_bot_client_token_service.status(user_id)
+        if not self._rule_bot_client_token_is_active(status):
             await query.edit_message_text(
                 "ℹ️ *当前没有可吊销的 Token*",
                 reply_markup=self._recovery_keyboard(
-                    "matchscope_access", "↩️ 返回接入页"
+                    "rule_bot_client_access", "↩️ 返回接入页"
                 ),
                 parse_mode="Markdown",
             )
             return
         token = self.create_pending_action(
-            user_id, "matchscope_revoke", confirmed=True
+            user_id, "rule_bot_client_revoke", confirmed=True
         )
         await query.edit_message_text(
             "⚠️ *吊销当前 Token？*\n\n"
@@ -1993,30 +1993,30 @@ class HandlerManager:
                     [
                         InlineKeyboardButton(
                             "🚫 确认吊销",
-                            callback_data=f"matchscope_revoke_confirm|{token}",
+                            callback_data=f"rule_bot_client_revoke_confirm|{token}",
                         )
                     ],
-                    [InlineKeyboardButton("↩️ 取消", callback_data="matchscope_access")],
+                    [InlineKeyboardButton("↩️ 取消", callback_data="rule_bot_client_access")],
                 ]
             ),
             parse_mode="Markdown",
         )
 
-    async def _confirm_matchscope_revoke(self, query, user_id: int, data: str):
+    async def _confirm_rule_bot_client_revoke(self, query, user_id: int, data: str):
         token = data.split("|", 1)[1] if "|" in data else ""
         action = self.get_pending_action(
-            user_id, token, "matchscope_revoke", consume=True
+            user_id, token, "rule_bot_client_revoke", consume=True
         )
         if not action:
             await query.edit_message_text(
                 "⌛ *确认已过期*\n\n当前 Token 未更改。",
                 reply_markup=self._recovery_keyboard(
-                    "matchscope_access", "↩️ 返回接入页"
+                    "rule_bot_client_access", "↩️ 返回接入页"
                 ),
                 parse_mode="Markdown",
             )
             return
-        revoked = await self.matchscope_token_service.revoke(user_id)
+        revoked = await self.rule_bot_client_token_service.revoke(user_id)
         text = (
             "🚫 *Token 已吊销*\n\n"
             "🔐 使用原 Token 的客户端已无法继续提交。\n"
@@ -2027,7 +2027,7 @@ class HandlerManager:
         await query.edit_message_text(
             text,
             reply_markup=self._recovery_keyboard(
-                "matchscope_access", "↩️ 返回接入页"
+                "rule_bot_client_access", "↩️ 返回接入页"
             ),
             parse_mode="Markdown",
         )

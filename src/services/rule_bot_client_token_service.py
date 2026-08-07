@@ -1,4 +1,4 @@
-"""MatchScope community token issuance and verification."""
+"""Rule-Bot Client Community token issuance and verification."""
 
 import asyncio
 import base64
@@ -14,7 +14,7 @@ from typing import Optional
 
 
 TOKEN_VERSION = 1
-TOKEN_SCOPE = "matchscope:submit"
+TOKEN_SCOPE = "rule-bot-client:submit"
 PRIVACY_NOTICE_VERSION = 1
 
 
@@ -27,7 +27,7 @@ def _b64decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + padding)
 
 
-class MatchScopeTokenService:
+class RuleBotClientTokenService:
     """Issue self-contained HMAC tokens with server-side revocation state."""
 
     def __init__(self, database_path: Path, signing_key: str, ttl_days: int):
@@ -47,7 +47,7 @@ class MatchScopeTokenService:
         with closing(self._connect()) as connection, connection:
             connection.execute(
                 """
-                CREATE TABLE IF NOT EXISTS matchscope_tokens (
+                CREATE TABLE IF NOT EXISTS rule_bot_client_tokens (
                     user_id INTEGER PRIMARY KEY,
                     subject TEXT NOT NULL UNIQUE,
                     version INTEGER NOT NULL,
@@ -60,7 +60,7 @@ class MatchScopeTokenService:
             )
             connection.execute(
                 """
-                CREATE TABLE IF NOT EXISTS matchscope_privacy_consents (
+                CREATE TABLE IF NOT EXISTS rule_bot_client_privacy_consents (
                     user_id INTEGER PRIMARY KEY,
                     notice_version INTEGER NOT NULL,
                     consented_at INTEGER NOT NULL
@@ -69,7 +69,7 @@ class MatchScopeTokenService:
             )
             connection.execute(
                 """
-                UPDATE matchscope_tokens
+                UPDATE rule_bot_client_tokens
                 SET last_used_at = NULL
                 WHERE last_used_at IS NOT NULL
                 """
@@ -84,7 +84,7 @@ class MatchScopeTokenService:
         with closing(self._connect()) as connection:
             row = connection.execute(
                 """
-                SELECT notice_version FROM matchscope_privacy_consents
+                SELECT notice_version FROM rule_bot_client_privacy_consents
                 WHERE user_id = ?
                 """,
                 (user_id,),
@@ -103,7 +103,7 @@ class MatchScopeTokenService:
         with closing(self._connect()) as connection, connection:
             connection.execute(
                 """
-                INSERT INTO matchscope_privacy_consents
+                INSERT INTO rule_bot_client_privacy_consents
                     (user_id, notice_version, consented_at)
                 VALUES (?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
@@ -113,7 +113,7 @@ class MatchScopeTokenService:
                 (user_id, PRIVACY_NOTICE_VERSION, now),
             )
             connection.execute(
-                "UPDATE matchscope_tokens SET last_used_at = NULL WHERE user_id = ?",
+                "UPDATE rule_bot_client_tokens SET last_used_at = NULL WHERE user_id = ?",
                 (user_id,),
             )
 
@@ -125,21 +125,23 @@ class MatchScopeTokenService:
         with closing(self._connect()) as connection, connection:
             token_cursor = connection.execute(
                 """
-                UPDATE matchscope_tokens
+                UPDATE rule_bot_client_tokens
                 SET enabled = 0, last_used_at = NULL
                 WHERE user_id = ?
                 """,
                 (user_id,),
             )
             consent_cursor = connection.execute(
-                "DELETE FROM matchscope_privacy_consents WHERE user_id = ?",
+                "DELETE FROM rule_bot_client_privacy_consents WHERE user_id = ?",
                 (user_id,),
             )
             return token_cursor.rowcount > 0 or consent_cursor.rowcount > 0
 
     async def issue(self, user_id: int) -> dict:
         if not await self.has_current_consent(user_id):
-            raise PermissionError("current MatchScope privacy notice is not accepted")
+            raise PermissionError(
+                "current Rule-Bot Client Community privacy notice is not accepted"
+            )
         now = int(time.time())
         expires_at = now + self.ttl_seconds
         subject = secrets.token_urlsafe(12)
@@ -178,12 +180,12 @@ class MatchScopeTokenService:
     ) -> int:
         with closing(self._connect()) as connection, connection:
             row = connection.execute(
-                "SELECT version FROM matchscope_tokens WHERE user_id = ?", (user_id,)
+                "SELECT version FROM rule_bot_client_tokens WHERE user_id = ?", (user_id,)
             ).fetchone()
             version = (int(row["version"]) + 1) if row else 1
             connection.execute(
                 """
-                INSERT INTO matchscope_tokens
+                INSERT INTO rule_bot_client_tokens
                     (user_id, subject, version, enabled, issued_at, expires_at, last_used_at)
                 VALUES (?, ?, ?, 1, ?, ?, NULL)
                 ON CONFLICT(user_id) DO UPDATE SET
@@ -205,7 +207,7 @@ class MatchScopeTokenService:
     def _revoke(self, user_id: int) -> bool:
         with closing(self._connect()) as connection, connection:
             cursor = connection.execute(
-                "UPDATE matchscope_tokens SET enabled = 0 WHERE user_id = ?",
+                "UPDATE rule_bot_client_tokens SET enabled = 0 WHERE user_id = ?",
                 (user_id,),
             )
             return cursor.rowcount > 0
@@ -263,8 +265,8 @@ class MatchScopeTokenService:
             row = connection.execute(
                 """
                 SELECT t.version, t.enabled, t.expires_at, c.notice_version
-                FROM matchscope_tokens AS t
-                LEFT JOIN matchscope_privacy_consents AS c
+                FROM rule_bot_client_tokens AS t
+                LEFT JOIN rule_bot_client_privacy_consents AS c
                     ON c.user_id = t.user_id
                 WHERE t.subject = ?
                 """,
@@ -291,7 +293,7 @@ class MatchScopeTokenService:
             row = connection.execute(
                 """
                 SELECT version, enabled, issued_at, expires_at
-                FROM matchscope_tokens WHERE user_id = ?
+                FROM rule_bot_client_tokens WHERE user_id = ?
                 """,
                 (user_id,),
             ).fetchone()

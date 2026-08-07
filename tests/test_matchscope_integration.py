@@ -246,9 +246,10 @@ class TestMatchScopeSubmission(unittest.IsolatedAsyncioTestCase):
     def test_main_menu_button_follows_public_api_switch(self):
         manager = HandlerManager.__new__(HandlerManager)
         manager.config = SimpleNamespace(MATCHSCOPE_PUBLIC_API_ENABLED=False)
+        disabled_keyboard = manager._build_main_menu_keyboard().inline_keyboard
         disabled_labels = [
             button.text
-            for row in manager._build_main_menu_keyboard().inline_keyboard
+            for row in disabled_keyboard
             for button in row
         ]
         manager.config.MATCHSCOPE_PUBLIC_API_ENABLED = True
@@ -257,8 +258,16 @@ class TestMatchScopeSubmission(unittest.IsolatedAsyncioTestCase):
             for row in manager._build_main_menu_keyboard().inline_keyboard
             for button in row
         ]
-        self.assertNotIn("🔗 MatchScope", disabled_labels)
-        self.assertIn("🔗 MatchScope", enabled_labels)
+        self.assertNotIn("🔗 MatchScope 接入", disabled_labels)
+        self.assertIn("🔗 MatchScope 接入", enabled_labels)
+        self.assertEqual(
+            [[button.text for button in row] for row in disabled_keyboard],
+            [
+                ["🔍 查询域名", "➕ 添加直连规则"],
+                ["ℹ️ 帮助信息"],
+                ["➖ 删除规则 · 暂未开放"],
+            ],
+        )
 
     async def test_cn_and_invalid_domains_are_terminal_without_checks(self):
         manager = HandlerManager.__new__(HandlerManager)

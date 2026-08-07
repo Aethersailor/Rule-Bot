@@ -668,11 +668,26 @@ class HandlerManager:
     def _build_main_menu_text(self, username: str) -> str:
         """构建主菜单文案"""
         username = self.escape_markdown(username)
-        return (
-            f"👋 *欢迎使用 Rule-Bot，{username}！*\n\n"
-            "查询域名的直连状态，或在确认后提交 `DOMAIN-SUFFIX` 规则。\n"
-            f"📂 *公开仓库：* `{self.config.GITHUB_REPO}`\n\n"
-            "请选择操作："
+        capabilities = [
+            "• 查询现有规则、GEOSITE:CN、IP 与 NS 状态",
+            "• 检查并提交 `DOMAIN-SUFFIX` 直连规则",
+        ]
+        if self.config.MATCHSCOPE_PUBLIC_API_ENABLED:
+            capabilities.append("• 管理 MatchScope 社区接入与个人 Token")
+        return "\n".join(
+            [
+                f"👋 *欢迎使用 Rule-Bot，{username}！*",
+                "",
+                "🧭 *Custom OpenClash Rules 规则助手*",
+                *capabilities,
+                "",
+                "提交前会展示最终规则并再次确认；通过的规则会公开写入 GitHub。",
+                "🚧 删除规则是为后续版本保留的入口，目前尚未开放。",
+                "",
+                f"📂 *公开仓库：* `{self.config.GITHUB_REPO}`",
+                "",
+                "请选择操作：",
+            ]
         )
 
     def _build_main_menu_keyboard(self) -> InlineKeyboardMarkup:
@@ -680,19 +695,37 @@ class HandlerManager:
         keyboard = [
             [
                 InlineKeyboardButton("🔍 查询域名", callback_data="query_domain"),
-                InlineKeyboardButton("➕ 添加直连", callback_data="add_direct_rule"),
+                InlineKeyboardButton("➕ 添加直连规则", callback_data="add_direct_rule"),
             ],
         ]
         if self.config.MATCHSCOPE_PUBLIC_API_ENABLED:
             keyboard.append(
                 [
-                    InlineKeyboardButton("🔗 MatchScope", callback_data="matchscope_access"),
-                    InlineKeyboardButton("ℹ️ 帮助", callback_data="help"),
+                    InlineKeyboardButton("🔗 MatchScope 接入", callback_data="matchscope_access"),
+                    InlineKeyboardButton("ℹ️ 帮助信息", callback_data="help"),
                 ]
             )
         else:
-            keyboard.append([InlineKeyboardButton("ℹ️ 帮助", callback_data="help")])
+            keyboard.append([InlineKeyboardButton("ℹ️ 帮助信息", callback_data="help")])
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    "➖ 删除规则 · 暂未开放", callback_data="delete_rule"
+                )
+            ]
+        )
         return InlineKeyboardMarkup(keyboard)
+
+    def _build_delete_unavailable_text(self) -> str:
+        """Build the visible placeholder for the planned rule-deletion workflow."""
+        return (
+            "➖ *删除规则*\n\n"
+            "🚧 *这是为后续版本保留的入口，当前尚未开放。*\n"
+            "点击本页不会删除或修改任何规则。\n\n"
+            f"📂 *目标仓库：* `{self.config.GITHUB_REPO}`\n"
+            f"📄 *直连规则：* `{self.config.DIRECT_RULE_FILE}`\n"
+            f"📄 *代理规则：* `{self.config.PROXY_RULE_FILE}`"
+        )
 
     def _build_help_text(self) -> str:
         """构建帮助文案"""
@@ -725,6 +758,9 @@ class HandlerManager:
             )
         lines.extend(
             [
+                "",
+                "*预留功能*",
+                "主菜单会持续保留删除规则入口；当前仅展示状态，不会修改仓库。",
                 "",
                 "添加前会显示最终 `DOMAIN-SUFFIX` 规则和公开范围；域名判断基于当前规则、DoH、GeoIP 与 NS 数据。",
                 f"📂 *仓库：* `{self.config.GITHUB_REPO}`",
@@ -937,7 +973,7 @@ class HandlerManager:
             return
         self._reset_user_flow(update.effective_user.id)
         await update.message.reply_text(
-            "➖ *删除规则功能暂不可用*\n\n该功能正在开发中，敬请期待。",
+            self._build_delete_unavailable_text(),
             reply_markup=self._recovery_keyboard(),
             parse_mode='Markdown',
         )
@@ -1481,7 +1517,7 @@ class HandlerManager:
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
-            f"➖ *删除规则*\n\n📂 *目标仓库：* `{self.config.GITHUB_REPO}`\n📄 *直连规则文件：* `{self.config.DIRECT_RULE_FILE}`\n📄 *代理规则文件：* `{self.config.PROXY_RULE_FILE}`\n\n⚠️ *删除规则功能暂不可用*\n\n该功能正在开发中，敬请期待。",
+            self._build_delete_unavailable_text(),
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )

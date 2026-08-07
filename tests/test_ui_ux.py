@@ -26,18 +26,27 @@ class TestVisibleCopy(unittest.TestCase):
         manager.MAX_DETAIL_LINE_LENGTH = 120
         return manager
 
-    def test_main_menu_is_compact_and_hides_unavailable_features(self):
+    def test_main_menu_preserves_complete_product_structure(self):
         manager = self._manager()
 
         text = manager._build_main_menu_text("Alice")
         keyboard = manager._build_main_menu_keyboard()
         labels = _button_labels(keyboard)
+        callbacks = {
+            button.text: button.callback_data
+            for row in keyboard.inline_keyboard
+            for button in row
+        }
 
-        self.assertLessEqual(len(text.strip().splitlines()), 8)
-        self.assertNotIn("添加代理规则", text)
-        self.assertNotIn("删除规则", text)
-        self.assertNotIn("➕ 添加代理规则", labels)
-        self.assertNotIn("➖ 删除规则", labels)
+        self.assertLessEqual(len(text.strip().splitlines()), 16)
+        self.assertIn("规则助手", text)
+        self.assertIn("提交前", text)
+        self.assertIn("保留的入口", text)
+        self.assertIn("➖ 删除规则 · 暂未开放", labels)
+        self.assertIn("🔗 MatchScope 接入", labels)
+        self.assertIn("ℹ️ 帮助信息", labels)
+        self.assertEqual(callbacks["➖ 删除规则 · 暂未开放"], "delete_rule")
+        self.assertEqual(len(keyboard.inline_keyboard), 3)
         self.assertLessEqual(max(len(row) for row in keyboard.inline_keyboard), 2)
 
     def test_help_lists_only_real_commands_and_visible_workflows(self):
@@ -49,8 +58,16 @@ class TestVisibleCopy(unittest.TestCase):
             self.assertIn(command, text)
         self.assertIn("群聊", text)
         self.assertIn("MatchScope", text)
-        self.assertNotIn("暂不支持", text)
+        self.assertIn("预留功能", text)
         self.assertLess(len(text), 4096)
+
+    def test_planned_delete_page_never_claims_availability(self):
+        manager = self._manager()
+
+        delete_text = manager._build_delete_unavailable_text()
+
+        self.assertIn("保留的入口，当前尚未开放", delete_text)
+        self.assertIn("点击本页不会删除或修改任何规则", delete_text)
 
     def test_prompts_use_accurate_registered_domain_term(self):
         manager = self._manager()
@@ -144,6 +161,27 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager.user_states[42]["state"], "idle")
         self.assertEqual(manager.user_states[42]["data"], {})
         self.assertNotIn((42, "old"), manager._pending_actions)
+
+    async def test_delete_placeholder_resets_state_without_deleting_rules(self):
+        manager = self._stateful_manager()
+        manager.github_service = SimpleNamespace(remove_domain_from_rules=AsyncMock())
+        query = SimpleNamespace(edit_message_text=AsyncMock())
+
+        await manager._show_delete_not_supported(query, 42)
+
+        self.assertEqual(manager.user_states[42]["state"], "idle")
+        self.assertEqual(manager.user_states[42]["data"], {})
+        self.assertNotIn((42, "old"), manager._pending_actions)
+        manager.github_service.remove_domain_from_rules.assert_not_awaited()
+
+        text = query.edit_message_text.await_args.args[0]
+        markup = query.edit_message_text.await_args.kwargs["reply_markup"]
+        self.assertIn("当前尚未开放", text)
+        self.assertEqual(_button_labels(markup), ["🏠 返回主菜单"])
+        self.assertEqual(
+            markup.inline_keyboard[0][0].callback_data,
+            "main_menu",
+        )
 
     async def test_starting_a_new_flow_invalidates_old_confirmation_buttons(self):
         manager = self._stateful_manager()

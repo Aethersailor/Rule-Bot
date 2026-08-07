@@ -330,6 +330,11 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager.user_states[42]["state"], "idle")
         self.assertEqual(manager.user_states[42]["data"], {})
         self.assertNotIn((42, "old"), manager._pending_actions)
+        self.assertTrue(
+            query.edit_message_text.await_args.kwargs[
+                "disable_web_page_preview"
+            ]
+        )
 
     async def test_delete_placeholder_resets_state_without_deleting_rules(self):
         manager = self._stateful_manager()
@@ -376,6 +381,11 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(manager.user_states[42]["state"], "idle")
         self.assertNotIn((42, "old"), manager._pending_actions)
+        self.assertTrue(
+            update.message.reply_text.await_args.kwargs[
+                "disable_web_page_preview"
+            ]
+        )
 
     async def test_unknown_command_keeps_membership_gate(self):
         manager = self._stateful_manager()

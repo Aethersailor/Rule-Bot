@@ -1306,6 +1306,7 @@ class HandlerManager:
                 self._build_main_menu_text(username),
                 reply_markup=self._build_main_menu_keyboard(),
                 parse_mode="Markdown",
+                disable_web_page_preview=True,
             )
             
         except Exception as e:
@@ -1614,7 +1615,12 @@ class HandlerManager:
         username = query.from_user.first_name or query.from_user.username or "用户"
         welcome_text = self._build_main_menu_text(username)
         reply_markup = self._build_main_menu_keyboard()
-        await query.edit_message_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+        await query.edit_message_text(
+            welcome_text,
+            reply_markup=reply_markup,
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+        )
 
     async def _show_main_menu_message(self, message):
         """通过消息显示主菜单"""
@@ -1622,7 +1628,12 @@ class HandlerManager:
         username = message.from_user.first_name or message.from_user.username or "用户"
         welcome_text = self._build_main_menu_text(username)
         reply_markup = self._build_main_menu_keyboard()
-        await message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+        await message.reply_text(
+            welcome_text,
+            reply_markup=reply_markup,
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+        )
 
     def _matchscope_endpoint(self) -> str:
         return (

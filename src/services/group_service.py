@@ -6,7 +6,7 @@
 import asyncio
 from typing import Optional
 from loguru import logger
-from telegram import Bot
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
 
 from ..config import Config
@@ -16,6 +16,8 @@ from ..utils.privacy import log_reference
 
 class GroupService:
     """群组验证服务"""
+
+    MEMBERSHIP_RETRY_CALLBACK = "membership_retry"
     
     def __init__(self, config: Config, bot: Bot):
         self.config = config
@@ -33,10 +35,17 @@ class GroupService:
         if not text:
             return text
 
+        text = " ".join(str(text).split()).replace("\\", "\\\\")
         special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '!']
         for char in special_chars:
             text = text.replace(char, f'\\{char}')
         return text
+
+    @staticmethod
+    def _escape_inline_code(value: object, max_length: int = 253) -> str:
+        """Keep a dynamic value on one safe legacy-Markdown code line."""
+        text = " ".join(str(value).split())[:max_length]
+        return text.replace("\\", "\\\\").replace("`", "\\`")
     
     async def check_user_in_group(
         self, user_id: int, *, force_refresh: bool = False
@@ -88,14 +97,32 @@ class GroupService:
         """获取加入群组的提示消息"""
         if not self._group_check_enabled:
             return ""
-        
-        message = "🔒 *使用限制*\n\n"
-        message += "为了使用本机器人，请先加入我们的群组：\n\n"
-        message += f"📢 *群组名称：* {self._escape_markdown(self.config.REQUIRED_GROUP_NAME)}\n"
-        message += f"🔗 *加入链接：* {self._escape_markdown(self.config.REQUIRED_GROUP_LINK)}\n\n"
-        message += "加入后请重新尝试使用机器人功能。"
-        
-        return message 
+
+        group_name = self._escape_markdown(self.config.REQUIRED_GROUP_NAME)
+        return (
+            "🔒 *加入群组后继续*\n\n"
+            "当前账号尚未通过成员验证。\n\n"
+            f"群组：{group_name}\n\n"
+            "加入后点击“已加入，重新验证”。"
+        )
+
+    def get_join_group_keyboard(self) -> InlineKeyboardMarkup:
+        """Return a narrow-screen membership recovery keyboard."""
+        keyboard = []
+        group_link = str(getattr(self.config, "REQUIRED_GROUP_LINK", "")).strip()
+        if group_link:
+            keyboard.append(
+                [InlineKeyboardButton("📢 加入群组", url=group_link)]
+            )
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    "✅ 已加入，重新验证",
+                    callback_data=self.MEMBERSHIP_RETRY_CALLBACK,
+                )
+            ]
+        )
+        return InlineKeyboardMarkup(keyboard)
 
     async def announce_rule_submission(
         self,
@@ -110,21 +137,34 @@ class GroupService:
         if not self._announcement_group_id:
             return False
 
-        short_sha = (commit_sha or "")[:8]
-        message = (
-            "📣 *直连规则更新*\n\n"
-            "✅ *结果：* 已成功提交\n"
-            "🧭 *类型：* `DOMAIN-SUFFIX`\n"
-            f"🌐 *域名：* `{domain}`"
-        )
-        if repo_path:
-            message += f"\n📁 *仓库路径：* `{repo_path}`"
-        if rule_path:
-            message += f"\n📄 *规则路径：* `{rule_path}`"
+        short_sha = "".join(
+            char for char in str(commit_sha or "") if char.isalnum()
+        )[:8]
+        safe_domain = self._escape_inline_code(domain)
+        message = "📣 *直连规则已更新*\n\n"
+        message += f"`DOMAIN-SUFFIX,{safe_domain}`"
+        details = []
         if user_name:
-            message += f"\n👤 *添加人：* {self._escape_markdown(user_name)}"
-        if commit_url and short_sha:
-            message += f"\n🔗 *提交：* [查看 {short_sha}]({commit_url})"
+            details.append(f"提交者：{self._escape_markdown(user_name)}")
+        if repo_path:
+            safe_repo = self._escape_inline_code(repo_path)
+            details.append(f"仓库：`{safe_repo}`")
+        if rule_path:
+            safe_rule_path = self._escape_inline_code(rule_path)
+            details.append(f"文件：`{safe_rule_path}`")
+        if details:
+            message += f"\n\n{'\n'.join(details)}"
+
+        reply_markup = None
+        if commit_url:
+            link_label = (
+                f"🔗 查看提交 {short_sha}"
+                if short_sha
+                else "🔗 查看 GitHub 提交"
+            )
+            reply_markup = InlineKeyboardMarkup(
+                [[InlineKeyboardButton(link_label, url=commit_url)]]
+            )
 
         try:
             await asyncio.wait_for(
@@ -132,6 +172,7 @@ class GroupService:
                     chat_id=self._announcement_group_id,
                     text=message,
                     parse_mode="Markdown",
+                    reply_markup=reply_markup,
                     disable_notification=True,
                     disable_web_page_preview=True,
                 ),

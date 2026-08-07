@@ -159,10 +159,10 @@ class RuleBot:
     def _build_bot_commands() -> list[BotCommand]:
         """Commands exposed in Telegram's native menu; omit unavailable dead ends."""
         return [
-            BotCommand("start", "打开主菜单"),
+            BotCommand("start", "打开首页"),
             BotCommand("query", "查询域名状态"),
             BotCommand("add", "添加直连规则"),
-            BotCommand("help", "查看使用说明"),
+            BotCommand("help", "查看使用帮助"),
             BotCommand("id", "查看 Telegram 用户 ID"),
             BotCommand("skip", "填写说明时跳过并提交"),
         ]

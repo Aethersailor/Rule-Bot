@@ -1,4 +1,6 @@
 import time
+import re
+import unicodedata
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -12,6 +14,30 @@ def _button_labels(markup):
     return [button.text for row in markup.inline_keyboard for button in row]
 
 
+def _display_width(text):
+    visible = re.sub(r"\\([_*`\[\]()~>#+\-=|{}.!])", r"\1", text)
+    visible = visible.replace("*", "").replace("`", "")
+    return sum(
+        0
+        if unicodedata.combining(char)
+        else 2
+        if unicodedata.east_asian_width(char) in {"W", "F"}
+        else 1
+        for char in visible
+    )
+
+
+def _assert_compact_page(case, text, *, max_lines=22, max_width=60):
+    case.assertNotIn("\n\n\n", text)
+    case.assertLessEqual(len(text.splitlines()), max_lines)
+    for line in text.splitlines():
+        case.assertLessEqual(
+            _display_width(line),
+            max_width,
+            msg=f"line is too wide ({_display_width(line)}): {line!r}",
+        )
+
+
 class TestVisibleCopy(unittest.TestCase):
     def _manager(self, matchscope_enabled=True):
         manager = HandlerManager.__new__(HandlerManager)
@@ -22,8 +48,9 @@ class TestVisibleCopy(unittest.TestCase):
             MATCHSCOPE_PUBLIC_API_ENABLED=matchscope_enabled,
             ANNOUNCEMENT_GROUP_ID=-100123 if matchscope_enabled else None,
         )
-        manager.MAX_DETAIL_LINES = 6
-        manager.MAX_DETAIL_LINE_LENGTH = 120
+        manager.MAX_DETAIL_LINES = 4
+        manager.MAX_DETAIL_LINE_LENGTH = 56
+        manager.MAX_DESCRIPTION_LENGTH = 20
         return manager
 
     def test_main_menu_preserves_complete_product_structure(self):
@@ -38,14 +65,15 @@ class TestVisibleCopy(unittest.TestCase):
             for button in row
         }
 
-        self.assertLessEqual(len(text.strip().splitlines()), 16)
-        self.assertIn("规则助手", text)
-        self.assertIn("提交前", text)
-        self.assertIn("保留的入口", text)
-        self.assertIn("➖ 删除规则 · 暂未开放", labels)
-        self.assertIn("🔗 MatchScope 接入", labels)
-        self.assertIn("ℹ️ 帮助信息", labels)
-        self.assertEqual(callbacks["➖ 删除规则 · 暂未开放"], "delete_rule")
+        _assert_compact_page(self, text, max_lines=12)
+        self.assertIn("Rule-Bot · 直连规则助手", text)
+        self.assertIn("提交前预览", text)
+        self.assertNotIn("•", text)
+        self.assertNotIn(manager.config.GITHUB_REPO, text)
+        self.assertIn("➖ 删除规则（暂未开放）", labels)
+        self.assertIn("🔗 MatchScope", labels)
+        self.assertIn("ℹ️ 使用帮助", labels)
+        self.assertEqual(callbacks["➖ 删除规则（暂未开放）"], "delete_rule")
         self.assertEqual(len(keyboard.inline_keyboard), 3)
         self.assertLessEqual(max(len(row) for row in keyboard.inline_keyboard), 2)
 
@@ -54,11 +82,20 @@ class TestVisibleCopy(unittest.TestCase):
 
         text = manager._build_help_text()
 
+        keyboard = manager._build_help_keyboard()
+
         for command in ("/query", "/add", "/id", "/help", "/skip"):
             self.assertIn(command, text)
         self.assertIn("群聊", text)
         self.assertIn("MatchScope", text)
-        self.assertIn("预留功能", text)
+        self.assertIn("删除规则", text)
+        self.assertNotIn(manager.config.GITHUB_REPO, text)
+        self.assertEqual(_button_labels(keyboard), ["📂 查看公开仓库", "🏠 返回首页"])
+        self.assertEqual(
+            keyboard.inline_keyboard[0][0].url,
+            "https://github.com/Aethersailor/Custom_OpenClash_Rules",
+        )
+        _assert_compact_page(self, text, max_lines=22)
         self.assertLess(len(text), 4096)
 
     def test_planned_delete_page_never_claims_availability(self):
@@ -66,20 +103,84 @@ class TestVisibleCopy(unittest.TestCase):
 
         delete_text = manager._build_delete_unavailable_text()
 
-        self.assertIn("保留的入口，当前尚未开放", delete_text)
-        self.assertIn("点击本页不会删除或修改任何规则", delete_text)
+        self.assertIn("后续版本预留", delete_text)
+        self.assertIn("当前暂未开放", delete_text)
+        self.assertIn("点击这里不会删除或修改任何规则", delete_text)
+        self.assertNotIn(manager.config.GITHUB_REPO, delete_text)
+        self.assertNotIn(manager.config.DIRECT_RULE_FILE, delete_text)
+        _assert_compact_page(self, delete_text, max_lines=7)
 
     def test_prompts_use_accurate_registered_domain_term(self):
         manager = self._manager()
 
-        query = manager._build_query_prompt("📊 *当前统计：* 可用\n\n")
-        add = manager._build_add_prompt("📊 *当前统计：* 可用\n\n")
+        query = manager._build_query_prompt("*当前数据*\n可用")
+        add = manager._build_add_prompt("*当前数据*\n可用")
 
         self.assertIn("可注册域名（主域名）", query)
         self.assertIn("可注册域名（主域名）", add)
         self.assertNotIn("二级域名", query + add)
-        self.assertLessEqual(len(query.strip().splitlines()), 16)
-        self.assertLessEqual(len(add.strip().splitlines()), 16)
+        _assert_compact_page(self, query, max_lines=16)
+        _assert_compact_page(self, add, max_lines=15)
+
+    def test_dynamic_details_are_bounded_for_narrow_screens(self):
+        manager = self._manager()
+
+        values = manager._format_value_list(
+            ["2001:db8::1", "2001:db8::2", "2001:db8::3", "2001:db8::4"]
+        )
+        details = manager._format_detail_lines(["中" * 100, "short"])
+        matches = manager._format_rule_matches(
+            [{"line": 123, "rule": "DOMAIN-SUFFIX," + "x" * 100}]
+        )
+
+        self.assertEqual(len(values.splitlines()), 4)
+        self.assertIn("另有 1 项", values)
+        for line in (values + "\n" + details + "\n" + matches).splitlines():
+            self.assertLessEqual(_display_width(line), 60)
+        self.assertNotIn("   •", details + matches)
+
+    def test_matchscope_pages_use_sections_instead_of_text_walls(self):
+        manager = self._manager()
+
+        access = manager._build_matchscope_access_text(
+            "有效", "2026-08-07 10:00 UTC"
+        )
+        privacy = manager._build_matchscope_privacy_text(False)
+
+        _assert_compact_page(self, access, max_lines=9)
+        _assert_compact_page(self, privacy, max_lines=24, max_width=62)
+        for heading in (
+            "官方 MatchScope 客户端",
+            "默认不会主动上报",
+            "账号关联",
+            "公开范围",
+            "网络与客户端",
+        ):
+            self.assertIn(heading, privacy)
+        self.assertNotIn("•", privacy)
+
+    def test_description_and_failure_pages_keep_one_clear_action(self):
+        manager = self._manager()
+        user = SimpleNamespace(id=1, username="alice", first_name="Alice")
+
+        description = manager._build_description_prompt_text("example.com", user)
+        failure = manager._build_add_failure_text("example.com")
+
+        self.assertIn("不需要说明可直接跳过", description)
+        self.assertIn("公开提交者：@alice", description)
+        self.assertIn("本次没有修改任何规则", failure)
+        _assert_compact_page(self, description, max_lines=12)
+        _assert_compact_page(self, failure, max_lines=7)
+
+    def test_uncertain_submission_page_never_claims_no_write(self):
+        manager = self._manager()
+
+        text = manager._build_submission_uncertain_text("example.com")
+
+        self.assertIn("提交结果暂时无法确认", text)
+        self.assertIn("避免重复提交", text)
+        self.assertNotIn("没有修改任何规则", text)
+        _assert_compact_page(self, text, max_lines=7)
 
     def test_identity_does_not_fake_a_username(self):
         manager = self._manager()
@@ -94,6 +195,21 @@ class TestVisibleCopy(unittest.TestCase):
         self.assertEqual(username, "@alice")
         self.assertEqual(display_name, "Alice Smith")
         self.assertNotIn("@", display_name)
+
+    def test_identity_collapses_lines_escapes_backslashes_and_limits_width(self):
+        manager = self._manager()
+
+        unusual = manager._format_telegram_identity(
+            SimpleNamespace(id=3, username=None, first_name="Alice\nBob\\")
+        )
+        long_name = manager._format_telegram_identity(
+            SimpleNamespace(id=4, username=None, first_name="中" * 100)
+        )
+
+        self.assertEqual(unusual, "Alice Bob\\\\")
+        self.assertNotIn("\n", unusual)
+        self.assertTrue(long_name.endswith("…"))
+        self.assertLessEqual(_display_width(long_name), 42)
 
     def test_add_review_discloses_exact_rule_and_public_scope(self):
         manager = self._manager()
@@ -112,7 +228,9 @@ class TestVisibleCopy(unittest.TestCase):
         self.assertIn("DOMAIN-SUFFIX,example.com", text)
         self.assertIn("公开 GitHub", text)
         self.assertIn("Alice", text)
-        self.assertIn("群组播报", text)
+        self.assertIn("群组公告", text)
+        self.assertNotIn("结论：", text)
+        _assert_compact_page(self, text, max_lines=22)
 
     def test_command_menu_omits_dead_end_commands(self):
         commands = RuleBot._build_bot_commands()
@@ -134,6 +252,7 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
             MATCHSCOPE_PUBLIC_BASE_URL="https://example.test",
             MATCHSCOPE_PUBLIC_API_PATH="/community",
             ANNOUNCEMENT_GROUP_ID=-100123,
+            ADMIN_USER_IDS=set(),
         )
         manager.user_states = {
             42: {"state": "waiting_add_domain", "data": {"domain": "old.example"}, "updated_at": time.monotonic()}
@@ -145,8 +264,10 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
         manager.STATE_TTL = 1800
         manager.ACTION_TTL = 900
         manager.MAX_USER_STATES = 4096
-        manager.MAX_DETAIL_LINES = 6
-        manager.MAX_DETAIL_LINE_LENGTH = 120
+        manager.MAX_DETAIL_LINES = 4
+        manager.MAX_DETAIL_LINE_LENGTH = 56
+        manager.MAX_DESCRIPTION_LENGTH = 20
+        manager.MAX_ADDS_PER_HOUR = 50
         return manager
 
     async def test_return_to_main_menu_resets_state_and_stale_actions(self):
@@ -176,8 +297,8 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
 
         text = query.edit_message_text.await_args.args[0]
         markup = query.edit_message_text.await_args.kwargs["reply_markup"]
-        self.assertIn("当前尚未开放", text)
-        self.assertEqual(_button_labels(markup), ["🏠 返回主菜单"])
+        self.assertIn("当前暂未开放", text)
+        self.assertEqual(_button_labels(markup), ["🏠 返回首页"])
         self.assertEqual(
             markup.inline_keyboard[0][0].callback_data,
             "main_menu",
@@ -271,6 +392,126 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
         buttons = _button_labels(processing.edit_text.await_args_list[-1].kwargs["reply_markup"])
         self.assertNotIn("➕ 添加到直连规则", buttons)
 
+    async def test_query_result_keeps_network_values_on_separate_lines(self):
+        manager = self._stateful_manager()
+        manager.github_service = SimpleNamespace(
+            check_domain_in_rules=AsyncMock(return_value={"exists": False})
+        )
+        manager.data_manager = SimpleNamespace(
+            is_domain_in_geosite=AsyncMock(return_value=False)
+        )
+        manager.domain_checker = SimpleNamespace(
+            check_domain_comprehensive=AsyncMock(
+                return_value={
+                    "domain_ips": [
+                        "2001:db8::1",
+                        "2001:db8::2",
+                        "2001:db8::3",
+                        "2001:db8::4",
+                    ],
+                    "second_level_ips": ["1.2.3.4"],
+                    "details": ["境外解析结果"],
+                    "domain_china_status": False,
+                    "second_level_china_status": False,
+                    "ns_china_status": False,
+                    "recommendation": "未检测到中国大陆信号",
+                }
+            )
+        )
+        processing = SimpleNamespace(edit_text=AsyncMock())
+        update = SimpleNamespace(
+            message=SimpleNamespace(reply_text=AsyncMock(return_value=processing)),
+            effective_user=SimpleNamespace(id=42),
+        )
+
+        await manager._handle_domain_query(update, "example.com", 42)
+
+        final = processing.edit_text.await_args_list[-1]
+        text = final.args[0]
+        self.assertTrue(text.startswith("ℹ️ *暂不建议添加*"))
+        self.assertIn("输入域名 IP\n• 2001:db8::1", text)
+        self.assertIn("• 另有 1 项", text)
+        self.assertNotIn(", 2001:db8", text)
+        self.assertEqual(
+            _button_labels(final.kwargs["reply_markup"]),
+            ["🔍 查询其他域名", "🏠 返回首页"],
+        )
+
+    async def test_add_review_page_has_confirm_cancel_and_home(self):
+        manager = self._stateful_manager()
+        manager.check_user_add_limit = MagicMock(return_value=(True, 50))
+        manager.github_service = SimpleNamespace(
+            check_domain_in_rules=AsyncMock(return_value={"exists": False})
+        )
+        manager.data_manager = SimpleNamespace(
+            is_domain_in_geosite=AsyncMock(return_value=False)
+        )
+        manager.domain_checker = SimpleNamespace(
+            check_domain_comprehensive=AsyncMock(
+                return_value={
+                    "recommendation": "检测到中国大陆 IP",
+                    "details": ["1.2.3.4 位于中国大陆"],
+                }
+            ),
+            get_target_domain_to_add=MagicMock(return_value="example.com"),
+            should_reject=MagicMock(return_value=False),
+            should_add_directly=MagicMock(return_value=True),
+        )
+        processing = SimpleNamespace(edit_text=AsyncMock())
+        update = SimpleNamespace(
+            message=SimpleNamespace(reply_text=AsyncMock(return_value=processing)),
+            effective_user=SimpleNamespace(
+                id=42, username="alice", first_name="Alice"
+            ),
+        )
+
+        await manager._handle_add_domain_input(update, "example.com", 42)
+
+        final = processing.edit_text.await_args_list[-1]
+        self.assertTrue(final.args[0].startswith("✅ *可以提交直连规则*"))
+        labels = _button_labels(final.kwargs["reply_markup"])
+        self.assertEqual(labels, ["✅ 确认公开提交", "↩️ 取消", "🏠 返回首页"])
+
+    async def test_rejected_add_page_has_policy_status_without_duplicate_title(self):
+        manager = self._stateful_manager()
+        manager.check_user_add_limit = MagicMock(return_value=(True, 50))
+        manager.github_service = SimpleNamespace(
+            check_domain_in_rules=AsyncMock(return_value={"exists": False})
+        )
+        manager.data_manager = SimpleNamespace(
+            is_domain_in_geosite=AsyncMock(return_value=False)
+        )
+        manager.domain_checker = SimpleNamespace(
+            check_domain_comprehensive=AsyncMock(
+                return_value={
+                    "recommendation": "未检测到中国大陆 IP 或 NS",
+                    "details": [],
+                }
+            ),
+            get_target_domain_to_add=MagicMock(return_value="example.com"),
+            should_reject=MagicMock(return_value=True),
+            should_add_directly=MagicMock(return_value=False),
+        )
+        manager.is_admin = MagicMock(return_value=False)
+        processing = SimpleNamespace(edit_text=AsyncMock())
+        update = SimpleNamespace(
+            message=SimpleNamespace(reply_text=AsyncMock(return_value=processing)),
+            effective_user=SimpleNamespace(
+                id=42, username="alice", first_name="Alice"
+            ),
+        )
+
+        await manager._handle_add_domain_input(update, "example.com", 42)
+
+        final = processing.edit_text.await_args_list[-1]
+        text = final.args[0]
+        self.assertEqual(text.count("暂不符合添加条件"), 1)
+        self.assertTrue(text.startswith("⛔"))
+        self.assertEqual(
+            _button_labels(final.kwargs["reply_markup"]),
+            ["➕ 添加其他域名", "🏠 返回首页"],
+        )
+
     async def test_privacy_copy_is_conditional_and_names_third_party_clients(self):
         manager = self._stateful_manager()
         manager.matchscope_token_service = SimpleNamespace(
@@ -312,13 +553,185 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
 
         await manager._revoke_matchscope_token(query, 42)
         revoke_text = query.edit_message_text.await_args.args[0]
-        self.assertIn("确认吊销", revoke_text)
+        self.assertIn("吊销当前 Token", revoke_text)
+        revoke_markup = query.edit_message_text.await_args.kwargs["reply_markup"]
+        self.assertIn("🚫 确认吊销", _button_labels(revoke_markup))
         manager.matchscope_token_service.revoke.assert_not_awaited()
 
         await manager._withdraw_matchscope_privacy(query, 42)
         withdraw_text = query.edit_message_text.await_args.args[0]
-        self.assertIn("确认撤回", withdraw_text)
+        self.assertIn("撤回隐私同意", withdraw_text)
+        withdraw_markup = query.edit_message_text.await_args.kwargs["reply_markup"]
+        self.assertIn("🚫 确认撤回并吊销", _button_labels(withdraw_markup))
         manager.matchscope_token_service.withdraw_consent.assert_not_awaited()
+
+    async def test_membership_page_has_join_and_force_refresh_recovery(self):
+        manager = self._stateful_manager()
+        keyboard = SimpleNamespace(inline_keyboard=[])
+        manager.group_service = SimpleNamespace(
+            is_group_check_enabled=MagicMock(return_value=True),
+            check_user_in_group=AsyncMock(return_value=False),
+            get_join_group_message=MagicMock(return_value="join"),
+            get_join_group_keyboard=MagicMock(return_value=keyboard),
+        )
+        callback = SimpleNamespace(
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=42),
+            callback_query=callback,
+        )
+
+        allowed = await manager.check_group_membership(
+            update,
+            force_refresh=True,
+            callback_answered=True,
+        )
+
+        self.assertFalse(allowed)
+        manager.group_service.check_user_in_group.assert_awaited_once_with(
+            42, force_refresh=True
+        )
+        callback.answer.assert_not_awaited()
+        self.assertIs(
+            callback.edit_message_text.await_args.kwargs["reply_markup"],
+            keyboard,
+        )
+
+    async def test_membership_retry_callback_bypasses_stale_gate(self):
+        manager = self._stateful_manager()
+        manager.group_service = SimpleNamespace(
+            is_group_check_enabled=MagicMock(return_value=True),
+            check_user_in_group=AsyncMock(return_value=True),
+        )
+        manager._show_main_menu = AsyncMock()
+        query = SimpleNamespace(
+            data="membership_retry",
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+        update = SimpleNamespace(
+            callback_query=query,
+            effective_user=SimpleNamespace(id=42),
+            effective_chat=SimpleNamespace(type="private", id=42),
+        )
+
+        await manager.handle_callback(update, None)
+
+        query.answer.assert_awaited_once()
+        manager.group_service.check_user_in_group.assert_awaited_once_with(
+            42, force_refresh=True
+        )
+        manager._show_main_menu.assert_awaited_once_with(query, 42)
+
+    async def test_matchscope_access_hides_long_endpoint_in_copy_button(self):
+        manager = self._stateful_manager()
+        manager.matchscope_token_service = SimpleNamespace(
+            status=AsyncMock(
+                return_value={"enabled": True, "expires_at": int(time.time()) + 3600}
+            ),
+            has_current_consent=AsyncMock(return_value=True),
+        )
+        query = SimpleNamespace(edit_message_text=AsyncMock())
+
+        await manager._show_matchscope_access(query, 42)
+
+        text = query.edit_message_text.await_args.args[0]
+        markup = query.edit_message_text.await_args.kwargs["reply_markup"]
+        endpoint = "https://example.test/community"
+        self.assertNotIn(endpoint, text)
+        copy_buttons = [
+            button
+            for row in markup.inline_keyboard
+            for button in row
+            if button.copy_text is not None
+        ]
+        self.assertEqual(len(copy_buttons), 1)
+        self.assertEqual(copy_buttons[0].copy_text.text, endpoint)
+        self.assertEqual(_button_labels(markup)[-1], "🏠 返回首页")
+
+    async def test_credential_message_distinguishes_delete_from_revoke(self):
+        manager = self._stateful_manager()
+        manager.group_service = SimpleNamespace(
+            check_user_in_group=AsyncMock(return_value=True)
+        )
+        manager.matchscope_token_service = SimpleNamespace(
+            issue=AsyncMock(
+                return_value={
+                    "token": "secret-token",
+                    "expires_at": int(time.time()) + 3600,
+                }
+            )
+        )
+        manager._show_matchscope_access = AsyncMock()
+        query = SimpleNamespace(
+            message=SimpleNamespace(reply_text=AsyncMock()),
+        )
+
+        await manager._perform_matchscope_issue(query, 42)
+
+        text = query.message.reply_text.await_args.args[0]
+        markup = query.message.reply_text.await_args.kwargs["reply_markup"]
+        self.assertIn("只显示一次", text)
+        self.assertIn("删除消息不会吊销 Token", text)
+        self.assertEqual(_button_labels(markup)[-1], "🗑️ 删除凭据消息")
+
+    async def test_invalid_description_keeps_skip_action_visible(self):
+        manager = self._stateful_manager()
+        manager.MAX_DESCRIPTION_LENGTH = 20
+        update = SimpleNamespace(message=SimpleNamespace(reply_text=AsyncMock()))
+
+        await manager._handle_description_input(update, "x" * 21, 42)
+
+        markup = update.message.reply_text.await_args.kwargs["reply_markup"]
+        self.assertEqual(
+            _button_labels(markup),
+            ["⏭️ 不填说明，直接提交", "↩️ 取消"],
+        )
+
+    async def test_add_exception_replaces_processing_page_with_recovery(self):
+        manager = self._stateful_manager()
+        manager.check_user_add_limit = MagicMock(side_effect=RuntimeError("boom"))
+        processing = SimpleNamespace(edit_text=AsyncMock())
+        update = SimpleNamespace(
+            message=SimpleNamespace(reply_text=AsyncMock(return_value=processing))
+        )
+
+        await manager._handle_add_domain_input(update, "example.com", 42)
+
+        update.message.reply_text.assert_awaited_once()
+        final = processing.edit_text.await_args
+        self.assertIn("本次没有提交任何规则", final.args[0])
+        self.assertIn("🏠 返回首页", _button_labels(final.kwargs["reply_markup"]))
+
+    async def test_write_exception_reports_uncertain_result_before_retry(self):
+        manager = self._stateful_manager()
+        manager.user_states[42] = {
+            "state": "waiting_description",
+            "data": {
+                "domain": "example.com",
+                "check_result": {"recommendation": "ok"},
+            },
+            "updated_at": time.monotonic(),
+        }
+        manager.domain_checker = SimpleNamespace(
+            get_target_domain_to_add=MagicMock(return_value="example.com")
+        )
+        manager._add_domain_with_limit = AsyncMock(
+            side_effect=RuntimeError("connection lost after request")
+        )
+        query = SimpleNamespace(
+            from_user=SimpleNamespace(id=42, username="alice"),
+            edit_message_text=AsyncMock(),
+        )
+
+        await manager._add_domain_to_github(query, 42, "")
+
+        final_text = query.edit_message_text.await_args_list[-1].args[0]
+        self.assertIn("提交结果暂时无法确认", final_text)
+        self.assertIn("避免重复提交", final_text)
+        self.assertNotIn("没有修改任何规则", final_text)
 
     async def test_matchscope_reissue_confirmation_is_scoped_and_single_use(self):
         manager = self._stateful_manager()

@@ -18,6 +18,37 @@ from ..utils.privacy import log_reference
 
 class GroupHandler:
     """群组消息处理器"""
+
+    @staticmethod
+    def _escape_inline_code(value: object, max_length: int = 253) -> str:
+        """Keep a dynamic value on one safe legacy-Markdown code line."""
+        text = " ".join(str(value).split())[:max_length]
+        return text.replace("\\", "\\\\").replace("`", "\\`")
+
+    def _escape_detail(self, value: object, max_length: int = 160) -> str:
+        """Format a short, single-line dynamic explanation."""
+        text = " ".join(str(value).split())
+        if len(text) > max_length:
+            text = f"{text[: max_length - 3]}..."
+        text = text.replace("\\", "\\\\")
+        return self.handler_manager.escape_markdown(text)
+
+    def _build_missing_domain_text(self) -> str:
+        return (
+            "⚠️ *没有识别到域名*\n\n"
+            "请再次 @我，并附带域名或 URL。\n\n"
+            "*示例域名*\n"
+            "`example.com`\n\n"
+            "也可以回复一条含域名的消息，再 @我。"
+        )
+
+    def _build_cn_domain_text(self, domain: str) -> str:
+        safe_domain = self._escape_inline_code(domain)
+        return (
+            "ℹ️ *.cn 域名无需添加*\n\n"
+            f"`{safe_domain}`\n\n"
+            "此类域名默认直连。"
+        )
     
     def __init__(self, config: Config, data_manager: DataManager, handler_manager):
         """初始化群组处理器
@@ -124,12 +155,7 @@ class GroupHandler:
             if not domain:
                 # 未找到有效域名
                 await message.reply_text(
-                    "❌ *未找到有效域名*\n\n"
-                    "💡 请在消息中包含域名，或回复包含域名的消息后 @我\n\n"
-                    "📝 支持格式：\n"
-                    "• `example.com`\n"
-                    "• `https://example.com/path`\n"
-                    "• `www.example.com`",
+                    self._build_missing_domain_text(),
                     parse_mode='Markdown'
                 )
                 return
@@ -137,8 +163,7 @@ class GroupHandler:
             # 检查是否为 .cn 域名
             if is_cn_domain(domain):
                 await message.reply_text(
-                    f"ℹ️ *域名 `{domain}` 为 .cn 域名*\n\n"
-                    "📋 所有 .cn 域名默认直连，无需手动添加。",
+                    self._build_cn_domain_text(domain),
                     parse_mode='Markdown'
                 )
                 return
@@ -210,16 +235,20 @@ class GroupHandler:
             username: 用户名（用于 commit）
             user_id: 用户 ID（用于频率限制）
         """
+        result = None
         try:
             identity = (
                 self.handler_manager._format_telegram_identity(user)
                 if user is not None
                 else self.handler_manager.escape_markdown(username)
             )
+            identity = " ".join(str(identity).split())[:80]
+            safe_domain = self._escape_inline_code(domain)
             processing_msg = await message.reply_text(
-                f"🔍 正在检查 `{domain}`。\n\n"
-                "若符合条件，将自动写入公开 GitHub，且不会再次确认。\n"
-                f"👤 *公开提交者：* {identity}",
+                "🔍 *正在检查域名*\n\n"
+                f"`{safe_domain}`\n\n"
+                "符合条件时，将自动写入公开 GitHub，且不再二次确认。\n\n"
+                f"提交者：{identity}",
                 parse_mode='Markdown',
             )
             
@@ -227,9 +256,9 @@ class GroupHandler:
             can_add, remaining = self.handler_manager.check_user_add_limit(user_id)
             if not can_add:
                 await processing_msg.edit_text(
-                    f"⚠️ *添加频率限制*\n\n"
-                    f"您在当前小时内已达到添加上限（{self.handler_manager.MAX_ADDS_PER_HOUR}个域名）。\n\n"
-                    "🕐 请等待一小时后再尝试。",
+                    "⚠️ *本小时添加次数已用完*\n\n"
+                    f"每小时最多可添加 {self.handler_manager.MAX_ADDS_PER_HOUR} 个域名。\n"
+                    "请稍后再试。",
                     parse_mode='Markdown'
                 )
                 return
@@ -246,48 +275,82 @@ class GroupHandler:
             if result["action"] == "added":
                 remaining = result["rate_limit_remaining"]
                 target_domain = result.get("target_domain", domain)
-                result_text = "✅ *直连规则已自动添加*\n\n"
-                result_text += f"🧭 `DOMAIN-SUFFIX,{target_domain}`\n"
-                result_text += f"👤 *提交者：* {identity}\n"
+                safe_target = self._escape_inline_code(target_domain)
+                result_text = (
+                    "✅ *直连规则已添加*\n\n"
+                    f"`DOMAIN-SUFFIX,{safe_target}`\n\n"
+                    f"提交者：{identity}\n"
+                    f"本小时剩余：{remaining} 个"
+                )
                 if result.get("commit_url"):
                     short_sha = str(result.get("commit_sha", ""))[:8]
                     link_label = (
-                        f"查看 GitHub 提交 {short_sha}"
+                        f"🔗 查看提交 {short_sha}"
                         if short_sha
-                        else "查看 GitHub 提交"
+                        else "🔗 查看 GitHub 提交"
                     )
-                    result_text += f"🔗 [{link_label}]({result['commit_url']})\n"
-                result_text += f"\n💡 本小时内还可添加 {remaining} 个域名"
+                    reply_markup = InlineKeyboardMarkup(
+                        [[InlineKeyboardButton(link_label, url=result["commit_url"])]]
+                    )
                 
             elif result["action"] == "exists":
-                result_text = "ℹ️ *域名已存在*\n\n"
-                result_text += f"📍 *域名：* `{domain}`\n"
-                result_text += f"📋 {result['message']}"
+                detail = self._escape_detail(result.get("message", "无需重复添加"))
+                result_text = (
+                    "ℹ️ *无需重复添加*\n\n"
+                    f"`{safe_domain}`\n\n"
+                    f"{detail}"
+                )
                 
             elif result["action"] == "rejected":
-                result_text = "❌ *无法添加域名*\n\n"
-                result_text += f"📍 *域名：* `{domain}`\n"
-                result_text += f"📋 {result['message']}"
+                detail = self._escape_detail(result.get("message", "不符合添加条件"))
+                result_text = (
+                    "⛔ *不符合添加条件*\n\n"
+                    f"`{safe_domain}`\n\n"
+                    f"{detail}"
+                )
                 if self.handler_manager.is_admin(user_id):
-                    result_text += "\n\n🛡️ *管理员可使用权限按钮强制添加。*"
+                    result_text += "\n\n管理员可使用下方按钮强制添加。"
                     keyboard = [
                         [InlineKeyboardButton(
-                            "🛡️ 管理员权限添加",
+                            "🛡️ 管理员强制添加",
                             callback_data=self.handler_manager.get_admin_force_add_callback(user_id, domain)
                         )]
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
                 
             else:  # error
-                result_text = "❌ *处理失败*\n\n"
-                result_text += f"📍 *域名：* `{domain}`\n"
-                error = self.handler_manager.escape_markdown(
-                    str(result.get("message", "未知错误"))[:300]
+                error = self._escape_detail(
+                    result.get("message", "未知错误")
                 )
-                result_text += f"❌ {error}"
+                result_text = (
+                    "❌ *处理失败*\n\n"
+                    f"`{safe_domain}`\n\n"
+                    f"{error}\n\n"
+                    "请稍后再次 @机器人。"
+                )
 
             await processing_msg.edit_text(result_text, reply_markup=reply_markup, parse_mode='Markdown')
             
         except Exception as e:
             logger.error(f"处理域名请求失败: {e}")
-            await message.reply_text(f"❌ 处理域名 `{domain}` 时出错，请稍后重试。", parse_mode='Markdown')
+            added = bool(result and result.get("action") == "added")
+            visible_domain = (
+                result.get("target_domain", domain) if added else domain
+            )
+            safe_domain = self._escape_inline_code(visible_domain)
+            if added:
+                text = (
+                    "⚠️ *规则已添加，但结果页更新失败*\n\n"
+                    f"`DOMAIN-SUFFIX,{safe_domain}`\n\n"
+                    "请先查看 GitHub，避免重复提交。"
+                )
+            else:
+                text = (
+                    "❌ *处理失败*\n\n"
+                    f"`{safe_domain}`\n\n"
+                    "请稍后再次 @机器人。"
+                )
+            await message.reply_text(
+                text,
+                parse_mode='Markdown',
+            )

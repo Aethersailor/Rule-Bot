@@ -258,14 +258,14 @@ class TestMatchScopeSubmission(unittest.IsolatedAsyncioTestCase):
             for row in manager._build_main_menu_keyboard().inline_keyboard
             for button in row
         ]
-        self.assertNotIn("🔗 MatchScope 接入", disabled_labels)
-        self.assertIn("🔗 MatchScope 接入", enabled_labels)
+        self.assertNotIn("🔗 MatchScope", disabled_labels)
+        self.assertIn("🔗 MatchScope", enabled_labels)
         self.assertEqual(
             [[button.text for button in row] for row in disabled_keyboard],
             [
-                ["🔍 查询域名", "➕ 添加直连规则"],
-                ["ℹ️ 帮助信息"],
-                ["➖ 删除规则 · 暂未开放"],
+                ["🔍 查询域名", "➕ 添加直连"],
+                ["ℹ️ 使用帮助"],
+                ["➖ 删除规则（暂未开放）"],
             ],
         )
 

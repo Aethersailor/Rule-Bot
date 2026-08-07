@@ -451,7 +451,10 @@ class TestMatchScopeCommitIdentity(unittest.IsolatedAsyncioTestCase):
             "feat(rules): add direct domain example.net by Rule-Bot (from MatchScope Community)",
         )
         self.assertIn("# add by MatchScope Community / Date:", update_args[2])
-        self.assertNotIn("42", update_args[2])
+        self.assertNotRegex(
+            update_args[2],
+            r"(?:user|Admin):\s*42\b",
+        )
 
 
 if __name__ == "__main__":

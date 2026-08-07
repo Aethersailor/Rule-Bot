@@ -130,6 +130,8 @@ class TestDomainChecker(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(checker.should_reject(result))
         self.assertIsNone(checker.get_target_domain_to_add(result))
         self.assertIn("example.net", result["recommendation"])
+        self.assertIn("可注册域名", result["recommendation"])
+        self.assertNotIn("二级域名", result["recommendation"])
         self.assertNotIn("None", result["recommendation"])
 
     async def test_ns_ip_queries_run_concurrently(self):

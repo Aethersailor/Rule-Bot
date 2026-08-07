@@ -116,6 +116,27 @@ class TestGroupHandlerResultPages(unittest.IsolatedAsyncioTestCase):
         self.assertIn("请稍后再次 @机器人", text)
         self.assertLess(len(text), 240)
 
+    async def test_uncertain_write_result_warns_before_any_retry(self):
+        handler = self._handler_for_result(
+            {
+                "action": "error",
+                "submission_uncertain": True,
+                "message": "提交结果暂时无法确认，请先查询规则，避免重复提交",
+            }
+        )
+        processing = SimpleNamespace(edit_text=AsyncMock())
+        message = SimpleNamespace(reply_text=AsyncMock(return_value=processing))
+
+        await handler._process_domain_request(
+            message, "example.com", "alice", 42
+        )
+
+        text = processing.edit_text.await_args.args[0]
+        self.assertTrue(text.startswith("⚠️ *提交结果暂时无法确认*"))
+        self.assertEqual(text.count("提交结果暂时无法确认"), 1)
+        self.assertIn("避免重复提交", text)
+        self.assertNotIn("请稍后再次", text)
+
     async def test_added_result_render_failure_warns_against_duplicate_submit(self):
         handler = self._handler_for_result(
             {

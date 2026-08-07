@@ -5,6 +5,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+from telegram.error import BadRequest
+
 from src.bot import RuleBot
 from src.handlers.group_handler import GroupHandler
 from src.handlers.handler_manager import HandlerManager
@@ -230,7 +232,8 @@ class TestVisibleCopy(unittest.TestCase):
         self.assertIn("Alice", text)
         self.assertIn("群组公告", text)
         self.assertNotIn("结论：", text)
-        _assert_compact_page(self, text, max_lines=22)
+        self.assertNotIn("检查详情", text)
+        _assert_compact_page(self, text, max_lines=10)
 
     def test_command_menu_omits_dead_end_commands(self):
         commands = RuleBot._build_bot_commands()
@@ -268,6 +271,33 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
         manager.MAX_DETAIL_LINE_LENGTH = 56
         manager.MAX_DESCRIPTION_LENGTH = 20
         manager.MAX_ADDS_PER_HOUR = 50
+        return manager
+
+    @staticmethod
+    def _query_candidate_manager():
+        manager = TestVisibleFlows._stateful_manager()
+        manager.github_service = SimpleNamespace(
+            check_domain_in_rules=AsyncMock(return_value={"exists": False})
+        )
+        manager.data_manager = SimpleNamespace(
+            is_domain_in_geosite=AsyncMock(return_value=False)
+        )
+        manager.domain_checker = SimpleNamespace(
+            check_domain_comprehensive=AsyncMock(
+                return_value={
+                    "domain_ips": ["1.2.3.4"],
+                    "second_level_ips": [],
+                    "details": ["1.2.3.4 位于中国大陆"],
+                    "domain_china_status": True,
+                    "second_level_china_status": False,
+                    "ns_china_status": False,
+                    "recommendation": "检测到中国大陆 IP",
+                }
+            ),
+            get_target_domain_to_add=MagicMock(return_value="example.com"),
+            should_reject=MagicMock(return_value=False),
+        )
+        manager.check_group_membership = AsyncMock(return_value=True)
         return manager
 
     async def test_return_to_main_menu_resets_state_and_stale_actions(self):
@@ -392,7 +422,7 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
         buttons = _button_labels(processing.edit_text.await_args_list[-1].kwargs["reply_markup"])
         self.assertNotIn("➕ 添加到直连规则", buttons)
 
-    async def test_query_result_keeps_network_values_on_separate_lines(self):
+    async def test_query_summary_is_compact_and_details_keep_network_values(self):
         manager = self._stateful_manager()
         manager.github_service = SimpleNamespace(
             check_domain_in_rules=AsyncMock(return_value={"exists": False})
@@ -427,15 +457,258 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
         await manager._handle_domain_query(update, "example.com", 42)
 
         final = processing.edit_text.await_args_list[-1]
-        text = final.args[0]
-        self.assertTrue(text.startswith("ℹ️ *暂不建议添加*"))
-        self.assertIn("输入域名 IP\n• 2001:db8::1", text)
-        self.assertIn("• 另有 1 项", text)
-        self.assertNotIn(", 2001:db8", text)
+        summary = final.args[0]
+        self.assertTrue(summary.startswith("ℹ️ *暂不建议添加*"))
+        self.assertIn("解析记录：输入 4 · 可注册域名 1", summary)
+        self.assertNotIn("2001:db8::1", summary)
+        _assert_compact_page(self, summary, max_lines=11)
         self.assertEqual(
             _button_labels(final.kwargs["reply_markup"]),
-            ["🔍 查询其他域名", "🏠 返回首页"],
+            ["🔎 技术详情", "🔍 查询其他域名", "🏠 返回首页"],
         )
+        self.assertEqual(
+            len(final.kwargs["reply_markup"].inline_keyboard[-1]), 2
+        )
+
+        details_button = final.kwargs["reply_markup"].inline_keyboard[0][0]
+        query = SimpleNamespace(edit_message_text=AsyncMock())
+        await manager._show_query_result_page(
+            query,
+            42,
+            details_button.callback_data,
+            detail=True,
+        )
+
+        detail = query.edit_message_text.await_args.args[0]
+        self.assertIn("输入域名 IP\n• 2001:db8::1", detail)
+        self.assertIn("• 另有 1 项", detail)
+        self.assertNotIn(", 2001:db8", detail)
+        self.assertIn(
+            "↩️ 返回摘要",
+            _button_labels(query.edit_message_text.await_args.kwargs["reply_markup"]),
+        )
+        manager.github_service.check_domain_in_rules.assert_awaited_once()
+        manager.data_manager.is_domain_in_geosite.assert_awaited_once()
+        manager.domain_checker.check_domain_comprehensive.assert_awaited_once()
+
+    def test_query_summary_has_one_business_conclusion(self):
+        manager = self._stateful_manager()
+        check_result = {
+            "normalized_domain": "example.com",
+            "second_level_domain": "example.com",
+            "domain_ips": ["1.2.3.4"],
+            "second_level_ips": [],
+            "domain_china_status": True,
+            "second_level_china_status": False,
+            "ns_china_status": False,
+            "recommendation": "✅ 添加可注册域名 example.com",
+        }
+
+        available = manager._build_query_summary_text(
+            "example.com",
+            {"exists": False},
+            False,
+            check_result,
+            "✅ *可以继续评估添加*",
+        )
+        covered = manager._build_query_summary_text(
+            "example.com",
+            {"exists": True, "matches": [{"rule": "example.com"}]},
+            False,
+            check_result,
+            "✅ *已被直连规则覆盖*",
+        )
+
+        self.assertIn("主域名同输入", available)
+        self.assertNotIn("可注册域名 0", available)
+        self.assertIn("判断：", available)
+        self.assertNotIn("判断：", covered)
+        self.assertNotIn("建议添加", covered)
+
+    async def test_repeated_query_page_click_keeps_current_page(self):
+        manager = self._stateful_manager()
+        token = manager.create_pending_action(
+            42,
+            "query_result_pages",
+            summary_text="summary",
+            detail_text="details",
+            add_callback="",
+        )
+        query = SimpleNamespace(
+            edit_message_text=AsyncMock(
+                side_effect=BadRequest("Message is not modified")
+            )
+        )
+
+        await manager._show_query_result_page(
+            query,
+            42,
+            f"query_details|{token}",
+            detail=True,
+        )
+
+        self.assertEqual(
+            manager.user_states[42]["state"], "waiting_query_domain"
+        )
+
+    async def test_new_query_invalidates_previous_add_callback(self):
+        manager = self._query_candidate_manager()
+        first_processing = SimpleNamespace(edit_text=AsyncMock())
+        second_processing = SimpleNamespace(edit_text=AsyncMock())
+        message = SimpleNamespace(
+            reply_text=AsyncMock(
+                side_effect=[first_processing, second_processing]
+            )
+        )
+        query_update = SimpleNamespace(
+            message=message,
+            effective_user=SimpleNamespace(
+                id=42, username="alice", first_name="Alice"
+            ),
+        )
+
+        await manager._handle_domain_query(query_update, "first.example", 42)
+        first_markup = first_processing.edit_text.await_args_list[-1].kwargs[
+            "reply_markup"
+        ]
+        old_add_callback = next(
+            button.callback_data
+            for row in first_markup.inline_keyboard
+            for button in row
+            if button.callback_data.startswith("add_domain|")
+        )
+
+        await manager._handle_domain_query(query_update, "second.example", 42)
+
+        callback = SimpleNamespace(
+            data=old_add_callback,
+            from_user=query_update.effective_user,
+            message=SimpleNamespace(chat=SimpleNamespace(type="private")),
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+        callback_update = SimpleNamespace(
+            callback_query=callback,
+            effective_user=query_update.effective_user,
+            effective_chat=SimpleNamespace(type="private", id=42),
+        )
+        await manager.handle_callback(callback_update, None)
+
+        self.assertIn("操作已过期", callback.edit_message_text.await_args.args[0])
+        self.assertEqual(
+            manager.domain_checker.check_domain_comprehensive.await_count, 2
+        )
+
+    async def test_consumed_query_add_cannot_restore_old_detail_page(self):
+        manager = self._query_candidate_manager()
+        processing = SimpleNamespace(edit_text=AsyncMock())
+        user = SimpleNamespace(id=42, username="alice", first_name="Alice")
+        query_update = SimpleNamespace(
+            message=SimpleNamespace(
+                reply_text=AsyncMock(return_value=processing)
+            ),
+            effective_user=user,
+        )
+
+        await manager._handle_domain_query(query_update, "example.com", 42)
+        markup = processing.edit_text.await_args_list[-1].kwargs["reply_markup"]
+        add_callback = next(
+            button.callback_data
+            for row in markup.inline_keyboard
+            for button in row
+            if button.callback_data.startswith("add_domain|")
+        )
+        detail_callback = next(
+            button.callback_data
+            for row in markup.inline_keyboard
+            for button in row
+            if button.callback_data.startswith("query_details|")
+        )
+
+        add_query = SimpleNamespace(
+            data=add_callback,
+            from_user=user,
+            message=SimpleNamespace(chat=SimpleNamespace(type="private")),
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+        add_update = SimpleNamespace(
+            callback_query=add_query,
+            effective_user=user,
+            effective_chat=SimpleNamespace(type="private", id=42),
+        )
+        await manager.handle_callback(add_update, None)
+
+        detail_query = SimpleNamespace(
+            data=detail_callback,
+            from_user=user,
+            message=SimpleNamespace(chat=SimpleNamespace(type="private")),
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+        detail_update = SimpleNamespace(
+            callback_query=detail_query,
+            effective_user=user,
+            effective_chat=SimpleNamespace(type="private", id=42),
+        )
+        await manager.handle_callback(detail_update, None)
+
+        restored_text = detail_query.edit_message_text.await_args.args[0]
+        self.assertIn("查询详情已过期", restored_text)
+        self.assertNotIn("技术详情", restored_text)
+
+    def test_extreme_query_result_keeps_default_page_short(self):
+        manager = self._stateful_manager()
+        github_result = {
+            "exists": True,
+            "matches": [
+                {"line": index, "rule": "DOMAIN-SUFFIX," + "x" * 80}
+                for index in range(1, 8)
+            ],
+        }
+        check_result = {
+            "domain_ips": [f"2001:db8::{index}" for index in range(8)],
+            "second_level_ips": [f"192.0.2.{index}" for index in range(8)],
+            "details": ["中" * 100 for _ in range(8)],
+            "domain_china_status": True,
+            "second_level_china_status": True,
+            "ns_china_status": True,
+            "recommendation": "中" * 200,
+        }
+
+        summary = manager._build_query_summary_text(
+            "example.com",
+            github_result,
+            False,
+            check_result,
+            "✅ *已被直连规则覆盖*",
+        )
+        detail = manager._build_query_detail_text(
+            "example.com", github_result, check_result
+        )
+
+        _assert_compact_page(self, summary, max_lines=11)
+        self.assertNotIn("2001:db8::", summary)
+        self.assertIn("7 条匹配", summary)
+        self.assertLess(len(detail), 4096)
+        self.assertIn("另有 3 条匹配未显示", detail)
+        self.assertIn("另有 5 项", detail)
+        for line in detail.splitlines():
+            self.assertLessEqual(_display_width(line), 60)
+
+        long_domain = ".".join(["a" * 63, "b" * 63, "c" * 40, "com"])
+        long_summary = manager._build_query_summary_text(
+            long_domain,
+            {"exists": False},
+            False,
+            check_result,
+            "ℹ️ *暂不建议添加*",
+        )
+        long_detail = manager._build_query_detail_text(
+            long_domain, {"exists": False}, check_result
+        )
+        for line in (long_summary + "\n" + long_detail).splitlines():
+            self.assertLessEqual(_display_width(line), 60)
 
     async def test_add_review_page_has_confirm_cancel_and_home(self):
         manager = self._stateful_manager()
@@ -469,6 +742,8 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
 
         final = processing.edit_text.await_args_list[-1]
         self.assertTrue(final.args[0].startswith("✅ *可以提交直连规则*"))
+        self.assertNotIn("检查详情", final.args[0])
+        _assert_compact_page(self, final.args[0], max_lines=10)
         labels = _button_labels(final.kwargs["reply_markup"])
         self.assertEqual(labels, ["✅ 确认公开提交", "↩️ 取消", "🏠 返回首页"])
 
@@ -511,6 +786,48 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
             _button_labels(final.kwargs["reply_markup"]),
             ["➕ 添加其他域名", "🏠 返回首页"],
         )
+
+    async def test_query_to_rejected_add_keeps_next_domain_action(self):
+        for is_admin, expected in (
+            (False, ["➕ 添加其他域名", "🏠 返回首页"]),
+            (
+                True,
+                [
+                    "🛡️ 管理员权限添加",
+                    "➕ 添加其他域名",
+                    "🏠 返回首页",
+                ],
+            ),
+        ):
+            manager = self._stateful_manager()
+            manager.is_admin = MagicMock(return_value=is_admin)
+            manager.domain_checker = SimpleNamespace(
+                check_domain_comprehensive=AsyncMock(
+                    return_value={
+                        "recommendation": "不符合条件",
+                        "details": [],
+                    }
+                ),
+                get_target_domain_to_add=MagicMock(return_value="example.com"),
+                should_reject=MagicMock(return_value=True),
+            )
+            token = manager.create_pending_action(
+                42, "add_domain", domain="example.com"
+            )
+            query = SimpleNamespace(
+                from_user=SimpleNamespace(
+                    id=42, username="alice", first_name="Alice"
+                ),
+                edit_message_text=AsyncMock(),
+            )
+
+            await manager._handle_add_domain_callback(
+                query, 42, f"add_domain|{token}"
+            )
+
+            markup = query.edit_message_text.await_args.kwargs["reply_markup"]
+            self.assertEqual(_button_labels(markup), expected)
+            self.assertEqual(manager.user_states[42]["state"], "waiting_add_domain")
 
     async def test_privacy_copy_is_conditional_and_names_third_party_clients(self):
         manager = self._stateful_manager()
@@ -625,6 +942,275 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
         )
         manager._show_main_menu.assert_awaited_once_with(query, 42)
 
+    async def test_private_navigation_callback_is_rejected_in_group(self):
+        manager = self._stateful_manager()
+        manager.config.ALLOWED_GROUP_IDS = {-100123}
+        manager.check_group_membership = AsyncMock(return_value=True)
+        manager._show_main_menu = AsyncMock()
+        original_state = dict(manager.user_states[42])
+        query = SimpleNamespace(
+            data="main_menu",
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+        update = SimpleNamespace(
+            callback_query=query,
+            effective_user=SimpleNamespace(id=42),
+            effective_chat=SimpleNamespace(type="supergroup", id=-100123),
+        )
+
+        await manager.handle_callback(update, None)
+
+        query.answer.assert_awaited_once_with(
+            "此按钮仅用于私聊；请私聊机器人继续操作。",
+            show_alert=True,
+        )
+        manager.check_group_membership.assert_not_awaited()
+        manager._show_main_menu.assert_not_awaited()
+        self.assertEqual(manager.user_states[42], original_state)
+
+    async def test_group_admin_force_callback_remains_routable(self):
+        manager = self._stateful_manager()
+        manager.config.ALLOWED_GROUP_IDS = {-100123}
+        manager.check_group_membership = AsyncMock(return_value=True)
+        manager._handle_admin_force_add_callback = AsyncMock()
+        query = SimpleNamespace(
+            data="admin_force_add|token",
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+        update = SimpleNamespace(
+            callback_query=query,
+            effective_user=SimpleNamespace(id=42),
+            effective_chat=SimpleNamespace(type="supergroup", id=-100123),
+        )
+
+        await manager.handle_callback(update, None)
+
+        query.answer.assert_not_awaited()
+        manager.check_group_membership.assert_not_awaited()
+        manager._handle_admin_force_add_callback.assert_awaited_once_with(
+            query, 42, "admin_force_add|token"
+        )
+
+    async def test_group_admin_button_intruders_do_not_edit_shared_message(self):
+        manager = self._stateful_manager()
+        manager.config.ALLOWED_GROUP_IDS = {-100123}
+        manager.config.ADMIN_USER_IDS = {42, 44}
+        token = manager.create_pending_action(
+            42, "admin_force_add", domain="example.com"
+        )
+
+        for intruder_id in (43, 44):
+            with self.subTest(intruder_id=intruder_id):
+                query = SimpleNamespace(
+                    data=f"admin_force_add|{token}",
+                    answer=AsyncMock(),
+                    edit_message_text=AsyncMock(),
+                    message=SimpleNamespace(
+                        chat=SimpleNamespace(type="supergroup")
+                    ),
+                )
+                update = SimpleNamespace(
+                    callback_query=query,
+                    effective_user=SimpleNamespace(id=intruder_id),
+                    effective_chat=SimpleNamespace(
+                        type="supergroup", id=-100123
+                    ),
+                )
+
+                await manager.handle_callback(update, None)
+
+                query.answer.assert_awaited_once()
+                self.assertTrue(query.answer.await_args.kwargs["show_alert"])
+                query.edit_message_text.assert_not_awaited()
+                self.assertIsNotNone(
+                    manager.get_pending_action(
+                        42,
+                        token,
+                        "admin_force_add",
+                        consume=False,
+                    )
+                )
+
+    async def test_group_admin_token_cleanup_race_does_not_edit_shared_message(self):
+        manager = self._stateful_manager()
+        manager.config.ADMIN_USER_IDS = {42}
+        manager.get_pending_action = MagicMock(
+            side_effect=[{"domain": "example.com"}, None]
+        )
+        query = SimpleNamespace(
+            data="admin_force_add|token",
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+            message=SimpleNamespace(chat=SimpleNamespace(type="supergroup")),
+        )
+
+        await manager._handle_admin_force_add_callback(
+            query, 42, "admin_force_add|token"
+        )
+
+        query.answer.assert_awaited_once_with()
+        self.assertEqual(manager.get_pending_action.call_count, 2)
+        query.edit_message_text.assert_not_awaited()
+
+    async def test_group_admin_answer_failure_does_not_edit_shared_message(self):
+        manager = self._stateful_manager()
+        manager.config.ALLOWED_GROUP_IDS = {-100123}
+        manager.config.ADMIN_USER_IDS = {42}
+        token = manager.create_pending_action(
+            42, "admin_force_add", domain="example.com"
+        )
+        query = SimpleNamespace(
+            data=f"admin_force_add|{token}",
+            answer=AsyncMock(side_effect=RuntimeError("telegram unavailable")),
+            edit_message_text=AsyncMock(),
+            message=SimpleNamespace(
+                chat=SimpleNamespace(type="supergroup")
+            ),
+        )
+        update = SimpleNamespace(
+            callback_query=query,
+            effective_user=SimpleNamespace(id=43),
+            effective_chat=SimpleNamespace(type="supergroup", id=-100123),
+        )
+
+        await manager.handle_callback(update, None)
+
+        query.edit_message_text.assert_not_awaited()
+        self.assertIsNotNone(
+            manager.get_pending_action(
+                42,
+                token,
+                "admin_force_add",
+                consume=False,
+            )
+        )
+
+    async def test_group_admin_force_add_does_not_change_private_state(self):
+        manager = self._stateful_manager()
+        manager.config.ADMIN_USER_IDS = {42}
+        original_state = {
+            "state": "waiting_description",
+            "data": {"domain": "private.example"},
+            "updated_at": manager.user_states[42]["updated_at"],
+        }
+        manager.user_states[42] = dict(original_state)
+        manager.check_user_add_limit = MagicMock(return_value=(True, 50))
+        manager.github_service = SimpleNamespace(
+            check_domain_in_rules=AsyncMock(return_value={"exists": False})
+        )
+        manager.data_manager = SimpleNamespace(
+            is_domain_in_geosite=AsyncMock(return_value=False)
+        )
+        manager.domain_checker = SimpleNamespace(
+            check_domain_comprehensive=AsyncMock(return_value={}),
+            get_target_domain_to_add=MagicMock(return_value="example.com"),
+        )
+        manager._add_domain_with_limit = AsyncMock(
+            return_value={
+                "success": True,
+                "rate_limit_remaining": 49,
+                "commit_url": "https://github.com/example/repo/commit/abc123",
+                "commit_sha": "abc123",
+            }
+        )
+        manager._announce_private_addition = AsyncMock()
+        token = manager.create_pending_action(
+            42, "admin_force_add", domain="example.com"
+        )
+        query = SimpleNamespace(
+            from_user=SimpleNamespace(
+                id=42, username="alice", first_name="Alice"
+            ),
+            message=SimpleNamespace(
+                chat=SimpleNamespace(type="supergroup"),
+                reply_text=AsyncMock(),
+            ),
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(
+                side_effect=[
+                    None,
+                    None,
+                    RuntimeError("result edit failed"),
+                ]
+            ),
+        )
+
+        await manager._handle_admin_force_add_callback(
+            query, 42, f"admin_force_add|{token}"
+        )
+        confirmation = query.edit_message_text.await_args_list[-1]
+        self.assertIn("立即公开写入 GitHub", confirmation.args[0])
+        self.assertEqual(
+            _button_labels(confirmation.kwargs["reply_markup"]),
+            ["⚠️ 确认立即公开提交", "↩️ 取消"],
+        )
+        manager._add_domain_with_limit.assert_not_awaited()
+
+        confirm_callback = confirmation.kwargs["reply_markup"].inline_keyboard[
+            0
+        ][0].callback_data
+        await manager._handle_admin_force_add_callback(
+            query, 42, confirm_callback
+        )
+
+        final = query.message.reply_text.await_args
+        self.assertIsNone(final.kwargs["reply_markup"])
+        self.assertIn("重新 @机器人", final.args[0])
+        self.assertIn("继续处理", final.args[0])
+        self.assertNotIn("请稍后重新", final.args[0])
+        manager._add_domain_with_limit.assert_awaited_once()
+        self.assertEqual(manager.user_states[42], original_state)
+
+    async def test_private_admin_force_add_keeps_private_navigation(self):
+        manager = self._stateful_manager()
+        manager.config.ADMIN_USER_IDS = {42}
+        manager.check_user_add_limit = MagicMock(return_value=(True, 50))
+        manager.github_service = SimpleNamespace(
+            check_domain_in_rules=AsyncMock(return_value={"exists": False})
+        )
+        manager.data_manager = SimpleNamespace(
+            is_domain_in_geosite=AsyncMock(return_value=False)
+        )
+        manager.domain_checker = SimpleNamespace(
+            check_domain_comprehensive=AsyncMock(return_value={}),
+            get_target_domain_to_add=MagicMock(return_value="example.com"),
+        )
+        manager._add_domain_with_limit = AsyncMock(
+            return_value={"success": False, "error": "definite failure"}
+        )
+        token = manager.create_pending_action(
+            42, "admin_force_add", domain="example.com"
+        )
+        query = SimpleNamespace(
+            from_user=SimpleNamespace(
+                id=42, username="alice", first_name="Alice"
+            ),
+            message=SimpleNamespace(chat=SimpleNamespace(type="private")),
+            edit_message_text=AsyncMock(),
+        )
+
+        await manager._handle_admin_force_add_callback(
+            query, 42, f"admin_force_add|{token}"
+        )
+        confirmation = query.edit_message_text.await_args_list[-1]
+        manager._add_domain_with_limit.assert_not_awaited()
+        confirm_callback = confirmation.kwargs["reply_markup"].inline_keyboard[
+            0
+        ][0].callback_data
+
+        await manager._handle_admin_force_add_callback(
+            query, 42, confirm_callback
+        )
+
+        final = query.edit_message_text.await_args_list[-1]
+        self.assertEqual(
+            _button_labels(final.kwargs["reply_markup"]),
+            ["➕ 继续添加", "🏠 返回首页"],
+        )
+        self.assertEqual(manager.user_states[42]["state"], "waiting_add_domain")
+
     async def test_matchscope_access_hides_long_endpoint_in_copy_button(self):
         manager = self._stateful_manager()
         manager.matchscope_token_service = SimpleNamespace(
@@ -732,6 +1318,160 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
         self.assertIn("提交结果暂时无法确认", final_text)
         self.assertIn("避免重复提交", final_text)
         self.assertNotIn("没有修改任何规则", final_text)
+        markup = query.edit_message_text.await_args_list[-1].kwargs[
+            "reply_markup"
+        ]
+        self.assertEqual(
+            _button_labels(markup), ["🔍 前往查询", "🏠 返回首页"]
+        )
+        self.assertEqual(
+            manager.user_states[42]["state"], "waiting_query_domain"
+        )
+
+    async def test_uncertain_service_result_is_not_rendered_as_definite_failure(self):
+        manager = self._stateful_manager()
+        manager.user_states[42] = {
+            "state": "waiting_description",
+            "data": {
+                "domain": "example.com",
+                "check_result": {"recommendation": "ok"},
+            },
+            "updated_at": time.monotonic(),
+        }
+        manager.domain_checker = SimpleNamespace(
+            get_target_domain_to_add=MagicMock(return_value="example.com")
+        )
+        manager._add_domain_with_limit = AsyncMock(
+            return_value={
+                "success": False,
+                "submission_uncertain": True,
+                "error": "response lost",
+            }
+        )
+        query = SimpleNamespace(
+            from_user=SimpleNamespace(id=42, username="alice"),
+            edit_message_text=AsyncMock(),
+        )
+
+        await manager._add_domain_to_github(query, 42, "")
+
+        final_text = query.edit_message_text.await_args_list[-1].args[0]
+        self.assertIn("提交结果暂时无法确认", final_text)
+        self.assertNotIn("没有修改任何规则", final_text)
+        markup = query.edit_message_text.await_args_list[-1].kwargs[
+            "reply_markup"
+        ]
+        self.assertEqual(
+            _button_labels(markup), ["🔍 前往查询", "🏠 返回首页"]
+        )
+        self.assertEqual(
+            manager.user_states[42]["state"], "waiting_query_domain"
+        )
+
+    async def test_callback_success_falls_back_before_group_announcement(self):
+        manager = self._stateful_manager()
+        manager.user_states[42] = {
+            "state": "waiting_description",
+            "data": {
+                "domain": "example.com",
+                "check_result": {"recommendation": "ok"},
+            },
+            "updated_at": time.monotonic(),
+        }
+        manager.domain_checker = SimpleNamespace(
+            get_target_domain_to_add=MagicMock(return_value="example.com")
+        )
+        manager._add_domain_with_limit = AsyncMock(
+            return_value={
+                "success": True,
+                "commit_sha": "abc123",
+                "commit_url": "https://github.com/example/repo/commit/abc123",
+                "rate_limit_remaining": 49,
+            }
+        )
+        events = []
+
+        async def fallback_reply(*args, **kwargs):
+            events.append("fallback")
+
+        async def announce(*args, **kwargs):
+            events.append("announcement")
+            return True
+
+        manager._announce_private_addition = AsyncMock(
+            side_effect=announce
+        )
+        message = SimpleNamespace(
+            chat=SimpleNamespace(type="private"),
+            reply_text=AsyncMock(side_effect=fallback_reply),
+        )
+        query = SimpleNamespace(
+            from_user=SimpleNamespace(
+                id=42, username="alice", first_name="Alice"
+            ),
+            message=message,
+            edit_message_text=AsyncMock(
+                side_effect=[None, RuntimeError("result edit failed")]
+            ),
+        )
+
+        await manager._add_domain_to_github(query, 42, "")
+
+        fallback_text = message.reply_text.await_args.args[0]
+        self.assertIn("直连规则已添加", fallback_text)
+        self.assertEqual(events, ["fallback", "announcement"])
+        self.assertEqual(
+            manager.user_states[42]["state"], "waiting_add_domain"
+        )
+
+    async def test_confirmed_write_edit_failures_keep_success_feedback(self):
+        manager = self._stateful_manager()
+        manager.user_states[42] = {
+            "state": "waiting_description",
+            "data": {
+                "domain": "example.com",
+                "check_result": {"recommendation": "ok"},
+            },
+            "updated_at": time.monotonic(),
+        }
+        manager.domain_checker = SimpleNamespace(
+            get_target_domain_to_add=MagicMock(return_value="example.com")
+        )
+        manager._add_domain_with_limit = AsyncMock(
+            return_value={
+                "success": True,
+                "commit_sha": "abc123",
+                "commit_url": "https://github.com/example/repo/commit/abc123",
+                "rate_limit_remaining": 49,
+            }
+        )
+        manager._announce_private_addition = AsyncMock()
+        processing = SimpleNamespace(
+            edit_text=AsyncMock(
+                side_effect=[
+                    RuntimeError("result edit failed"),
+                    RuntimeError("recovery edit failed"),
+                ]
+            )
+        )
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(
+                id=42, username="alice", first_name="Alice"
+            ),
+            chat=SimpleNamespace(type="private"),
+            reply_text=AsyncMock(side_effect=[processing, None]),
+        )
+
+        await manager._add_domain_to_github_message(message, 42, "")
+
+        fallback_text = message.reply_text.await_args_list[-1].args[0]
+        self.assertIn("直连规则已添加", fallback_text)
+        self.assertIn("查看 GitHub 提交", fallback_text)
+        self.assertNotIn("没有修改任何规则", fallback_text)
+        manager._announce_private_addition.assert_awaited_once()
+        self.assertEqual(
+            manager.user_states[42]["state"], "waiting_add_domain"
+        )
 
     async def test_matchscope_reissue_confirmation_is_scoped_and_single_use(self):
         manager = self._stateful_manager()

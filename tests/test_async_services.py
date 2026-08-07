@@ -1,8 +1,14 @@
+import asyncio
+import threading
 import unittest
-from unittest.mock import MagicMock, patch
+from collections import defaultdict
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 import sys
 import os
 import base64
+
+from github import GithubException
 
 # Add repo root to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
@@ -10,6 +16,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from src.services.dns_service import DNSService
 from src.services.github_service import GitHubService
 from src.config import Config
+from src.handlers.handler_manager import HandlerManager
 
 class TestServices(unittest.IsolatedAsyncioTestCase):
     async def test_dns_service_lifecycle(self):
@@ -184,6 +191,107 @@ class TestServices(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result["success"])
         service.repo.update_file.assert_not_called()
+
+    async def test_github_commit_transport_failure_is_marked_uncertain(self):
+        service = GitHubService.__new__(GitHubService)
+        service.config = MagicMock(spec=Config)
+        service.config.DIRECT_RULE_FILE = "rule.list"
+        service.config.GITHUB_REPO = "test/repo"
+        service.config.GITHUB_BRANCH = "master"
+        service.config.GITHUB_COMMIT_NAME = "bot"
+        service.config.GITHUB_COMMIT_EMAIL = "bot@test.com"
+        service.repo = MagicMock()
+        service.repo.update_file.side_effect = OSError(
+            "connection lost after request"
+        )
+        service.get_rule_file_data = AsyncMock(
+            return_value={
+                "content": "# 以下域名待提交 PR\n",
+                "sha": "old-sha",
+            }
+        )
+
+        result = await service._add_domain_to_rules_unlocked(
+            "example.com", "user"
+        )
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["submission_uncertain"])
+
+    async def test_cancelled_update_file_marks_result_uncertain(self):
+        service = GitHubService.__new__(GitHubService)
+        service.config = MagicMock(spec=Config)
+        service.config.DIRECT_RULE_FILE = "rule.list"
+        service.config.GITHUB_REPO = "test/repo"
+        service.config.GITHUB_BRANCH = "master"
+        service.config.GITHUB_COMMIT_NAME = "bot"
+        service.config.GITHUB_COMMIT_EMAIL = "bot@test.com"
+        service.repo = MagicMock()
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_update(*args, **kwargs):
+            started.set()
+            release.wait(timeout=5)
+            return {"commit": SimpleNamespace(sha="late-commit")}
+
+        service.repo.update_file.side_effect = blocking_update
+        service.get_rule_file_data = AsyncMock(
+            return_value={
+                "content": "# 以下域名待提交 PR\n",
+                "sha": "old-sha",
+            }
+        )
+        task = asyncio.create_task(
+            service._add_domain_to_rules_unlocked("example.com", "user")
+        )
+
+        try:
+            entered = await asyncio.to_thread(started.wait, 2)
+            self.assertTrue(entered)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError) as caught:
+                await task
+            self.assertTrue(caught.exception.submission_uncertain)
+        finally:
+            release.set()
+
+    async def test_explicit_github_rejections_release_rate_reservation(self):
+        for status in (403, 422):
+            with self.subTest(status=status):
+                service = GitHubService.__new__(GitHubService)
+                service.config = MagicMock(spec=Config)
+                service.config.DIRECT_RULE_FILE = "rule.list"
+                service.config.GITHUB_REPO = "test/repo"
+                service.config.GITHUB_BRANCH = "master"
+                service.config.GITHUB_COMMIT_NAME = "bot"
+                service.config.GITHUB_COMMIT_EMAIL = "bot@test.com"
+                service._write_lock = asyncio.Lock()
+                service.repo = MagicMock()
+                service.repo.update_file.side_effect = GithubException(
+                    status, {"message": "request rejected"}
+                )
+                service.get_rule_file_data = AsyncMock(
+                    return_value={
+                        "content": "# 以下域名待提交 PR\n",
+                        "sha": "old-sha",
+                    }
+                )
+                manager = HandlerManager.__new__(HandlerManager)
+                manager.MAX_ADDS_PER_HOUR = 1
+                manager.user_add_history = defaultdict(list)
+                manager._last_history_cleanup = 0
+                manager.github_service = service
+
+                result = await manager._add_domain_with_limit(
+                    123,
+                    "example.com",
+                    "user",
+                )
+
+                self.assertFalse(result["success"])
+                self.assertNotIn("submission_uncertain", result)
+                self.assertNotIn(123, manager.user_add_history)
 
 if __name__ == '__main__':
     unittest.main()

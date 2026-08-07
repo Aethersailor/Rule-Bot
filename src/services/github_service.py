@@ -288,6 +288,7 @@ class GitHubService:
         source: str = "telegram",
     ) -> Dict[str, Any]:
         """添加域名到规则文件"""
+        commit_attempted = False
         try:
             normalized_domain = normalize_domain(domain)
             if not normalized_domain or normalized_domain != domain.strip().lower():
@@ -455,18 +456,32 @@ class GitHubService:
 
                 try:
                     start_ts = time.perf_counter()
+                    commit_attempted = True
                     commit_result = await asyncio.to_thread(_perform_commit)
                     METRICS.record_request(
                         "github.update_file",
                         (time.perf_counter() - start_ts) * 1000,
                         success=True
                     )
+                except asyncio.CancelledError as e:
+                    # Cancelling the await does not stop the worker thread. The
+                    # GitHub request may still finish, so callers must retain
+                    # their duplicate-submission guard while cancellation
+                    # continues to propagate.
+                    METRICS.record_request("github.update_file", 0.0, success=False)
+                    e.submission_uncertain = True
+                    raise
                 except GithubException as e:
                     METRICS.record_request("github.update_file", 0.0, success=False)
-                    if getattr(e, "status", None) == 409 and attempt < max_retries:
-                        logger.warning("GitHub 更新冲突，准备重试")
-                        await asyncio.sleep(0.5 * attempt)
-                        continue
+                    if getattr(e, "status", None) == 409:
+                        if attempt < max_retries:
+                            logger.warning("GitHub 更新冲突，准备重试")
+                            await asyncio.sleep(0.5 * attempt)
+                            continue
+                        return {
+                            "success": False,
+                            "error": "GitHub 更新冲突，多次重试失败",
+                        }
                     raise
 
                 # 构建 commit 链接
@@ -494,12 +509,30 @@ class GitHubService:
 
         except ValueError as e:
             logger.warning("拒绝不安全的规则元数据: {}", e)
-            return {"success": False, "error": str(e)}
+            result = {"success": False, "error": str(e)}
+            if commit_attempted:
+                result["submission_uncertain"] = True
+            return result
         except GithubException as e:
             error_details = getattr(e, 'data', {})
             error_message = error_details.get('message', str(e)) if error_details else str(e)
-            logger.error(f"GitHub API 错误: status={getattr(e, 'status', 'unknown')}, message={error_message}, data={error_details}")
-            return {"success": False, "error": f"GitHub API 错误: {error_message} (状态码: {getattr(e, 'status', 'unknown')})"}
+            status = getattr(e, 'status', None)
+            logger.error(f"GitHub API 错误: status={status or 'unknown'}, message={error_message}, data={error_details}")
+            result = {
+                "success": False,
+                "error": (
+                    f"GitHub API 错误: {error_message} "
+                    f"(状态码: {status or 'unknown'})"
+                ),
+            }
+            definite_rejection = (
+                isinstance(status, int)
+                and 400 <= status < 500
+                and status != 408
+            )
+            if commit_attempted and not definite_rejection:
+                result["submission_uncertain"] = True
+            return result
         except Exception as e:
             logger.error(f"添加域名规则失败: {type(e).__name__}: {e}", exc_info=True)
             # 添加更详细的错误信息
@@ -508,7 +541,10 @@ class GitHubService:
                 import traceback
                 tb_str = ''.join(traceback.format_tb(e.__traceback__))
                 logger.error(f"详细错误堆栈: {tb_str}")
-            return {"success": False, "error": error_msg}
+            result = {"success": False, "error": error_msg}
+            if commit_attempted:
+                result["submission_uncertain"] = True
+            return result
     
     async def remove_domain_from_rules(
         self,

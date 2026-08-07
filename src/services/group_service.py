@@ -146,12 +146,6 @@ class GroupService:
         details = []
         if user_name:
             details.append(f"提交者：{self._escape_markdown(user_name)}")
-        if repo_path:
-            safe_repo = self._escape_inline_code(repo_path)
-            details.append(f"仓库：`{safe_repo}`")
-        if rule_path:
-            safe_rule_path = self._escape_inline_code(rule_path)
-            details.append(f"文件：`{safe_rule_path}`")
         if details:
             message += f"\n\n{'\n'.join(details)}"
 

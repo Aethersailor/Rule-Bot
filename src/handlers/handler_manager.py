@@ -18,6 +18,7 @@ from telegram import (
     InlineKeyboardMarkup,
 )
 from telegram.ext import ContextTypes
+from telegram.error import BadRequest
 
 from ..config import Config
 from ..data_manager import DataManager
@@ -244,11 +245,19 @@ class HandlerManager:
                     "message": "域名已存在于 GitHub 规则中",
                 }
             else:
+                submission_uncertain = bool(
+                    add_result.get("submission_uncertain")
+                )
                 return {
                     "success": False,
                     "action": "error",
-                    "message": "暂时无法写入 GitHub 规则",
+                    "message": (
+                        "提交结果暂时无法确认，请先查询规则，避免重复提交"
+                        if submission_uncertain
+                        else "暂时无法写入 GitHub 规则"
+                    ),
                     "rate_limited": add_result.get("rate_limited", False),
+                    "submission_uncertain": submission_uncertain,
                 }
                 
         except Exception as e:
@@ -395,6 +404,12 @@ class HandlerManager:
         if consume:
             self._pending_actions.pop(key, None)
         return item.get("data", {})
+
+    def _discard_pending_actions(self, user_id: int, action_names: set) -> None:
+        """Invalidate selected visible actions for one user."""
+        for key, item in list(self._pending_actions.items()):
+            if key[0] == user_id and item.get("action") in action_names:
+                self._pending_actions.pop(key, None)
     
     def check_user_add_limit(
         self, user_id: object, max_adds: Optional[int] = None
@@ -487,10 +502,12 @@ class HandlerManager:
                 source=source,
             )
             if not add_result.get("success"):
-                self._rollback_user_add(user_id, reservation)
+                if not add_result.get("submission_uncertain"):
+                    self._rollback_user_add(user_id, reservation)
                 return add_result
-        except BaseException:
-            self._rollback_user_add(user_id, reservation)
+        except BaseException as e:
+            if not getattr(e, "submission_uncertain", False):
+                self._rollback_user_add(user_id, reservation)
             raise
 
         add_result["rate_limit_remaining"] = max(
@@ -623,11 +640,11 @@ class HandlerManager:
             width += char_width
         return "".join(visible).rstrip() + "…"
 
-    def _format_rule_matches(self, matches: list) -> str:
+    def _format_rule_matches(self, matches: list, limit: Optional[int] = None) -> str:
         """Bound dynamic GitHub matches so Telegram messages remain below limits."""
         if not matches:
             return ""
-        limit = getattr(self, "MAX_DETAIL_LINES", 4)
+        limit = limit or getattr(self, "MAX_DETAIL_LINES", 4)
         line_limit = getattr(self, "MAX_DETAIL_LINE_LENGTH", 56)
         lines = []
         for match in matches[:limit]:
@@ -656,13 +673,11 @@ class HandlerManager:
     def _submission_notice(self, user) -> str:
         identity = self._format_telegram_identity(user)
         lines = [
-            "*公开内容*",
-            "最终规则、提交时间、可选说明和提交者",
-            "都会进入公开 GitHub 历史。",
+            "规则与提交者将进入公开 GitHub 历史。",
             f"提交者：{identity}",
         ]
         if getattr(self.config, "ANNOUNCEMENT_GROUP_ID", None):
-            lines.extend(["", "提交结果还会同步至群组公告。"])
+            lines.append("提交结果还会同步至群组公告。")
         return "\n".join(lines)
 
     def _build_add_review_text(self, domain: str, check_result: dict, user) -> tuple[str, str]:
@@ -677,23 +692,19 @@ class HandlerManager:
         lines = [
             conclusion,
             "",
-            "*最终规则*",
             f"`DOMAIN-SUFFIX,{target_domain}`",
         ]
-        if target_domain != domain:
-            lines.extend(["", "*输入域名*", f"`{domain}`"])
         recommendation = str(check_result.get("recommendation", "")).strip()
         if recommendation:
             lines.extend(
                 [
                     "",
-                    "*判断依据*",
-                    self.escape_markdown(self._truncate_display(recommendation)),
+                    "依据："
+                    + self.escape_markdown(
+                        self._truncate_display(recommendation, 56)
+                    ),
                 ]
             )
-        detail_lines = self._format_detail_lines(check_result.get("details", []))
-        if detail_lines:
-            lines.extend(["", "*检查详情*", detail_lines])
         if not should_reject:
             lines.extend(["", self._submission_notice(user)])
         return "\n".join(lines), target_domain
@@ -737,8 +748,11 @@ class HandlerManager:
             f"公开提交者：{self._format_telegram_identity(user)}"
         )
 
-    @staticmethod
-    def _build_add_failure_text(target_domain: str) -> str:
+    def _build_add_failure_text(
+        self, target_domain: str, add_result: Optional[dict] = None
+    ) -> str:
+        if add_result and add_result.get("submission_uncertain"):
+            return self._build_submission_uncertain_text(target_domain)
         return (
             "❌ *直连规则添加失败*\n\n"
             f"`{target_domain}`\n\n"
@@ -759,6 +773,99 @@ class HandlerManager:
             ]
         )
         return "\n".join(lines)
+
+    @staticmethod
+    def _build_add_result_keyboard(add_result: dict) -> InlineKeyboardMarkup:
+        if add_result.get("submission_uncertain"):
+            primary = InlineKeyboardButton(
+                "🔍 前往查询", callback_data="query_domain"
+            )
+        else:
+            primary = InlineKeyboardButton(
+                "➕ 继续添加", callback_data="add_direct_rule"
+            )
+        return InlineKeyboardMarkup(
+            [
+                [primary],
+                [InlineKeyboardButton("🏠 返回首页", callback_data="main_menu")],
+            ]
+        )
+
+    @staticmethod
+    def _build_confirmed_add_fallback_text(
+        target_domain: str, add_result: dict
+    ) -> str:
+        lines = [
+            "✅ *直连规则已添加*",
+            "",
+            f"`DOMAIN-SUFFIX,{target_domain}`",
+        ]
+        commit_url = add_result.get("commit_url", "")
+        if commit_url:
+            lines.extend(["", f"[查看 GitHub 提交]({commit_url})"])
+        return "\n".join(lines)
+
+    async def _display_callback_result(
+        self,
+        query,
+        text: str,
+        reply_markup: Optional[InlineKeyboardMarkup],
+    ) -> bool:
+        """Show a callback result, falling back to a new chat message."""
+        try:
+            await query.edit_message_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode="Markdown",
+            )
+            return True
+        except Exception as display_error:
+            logger.error(f"提交结果页编辑失败: {display_error}")
+
+        reply_text = getattr(
+            getattr(query, "message", None), "reply_text", None
+        )
+        if not callable(reply_text):
+            return False
+        try:
+            await reply_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode="Markdown",
+            )
+            return True
+        except Exception as reply_error:
+            logger.error(f"提交结果兜底消息发送失败: {reply_error}")
+            return False
+
+    async def _display_message_result(
+        self,
+        message,
+        processing_msg,
+        text: str,
+        reply_markup: Optional[InlineKeyboardMarkup],
+    ) -> bool:
+        """Show a message result, falling back from edit to a new reply."""
+        if processing_msg is not None:
+            try:
+                await processing_msg.edit_text(
+                    text,
+                    reply_markup=reply_markup,
+                    parse_mode="Markdown",
+                )
+                return True
+            except Exception as display_error:
+                logger.error(f"提交结果页编辑失败: {display_error}")
+        try:
+            await message.reply_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode="Markdown",
+            )
+            return True
+        except Exception as reply_error:
+            logger.error(f"提交结果兜底消息发送失败: {reply_error}")
+            return False
 
     def _build_main_menu_text(self, username: str) -> str:
         """构建主菜单文案"""
@@ -885,23 +992,177 @@ class HandlerManager:
             logger.error(f"获取统计信息失败: {e}")
             return "*当前数据*\n直连统计暂时无法获取，不影响继续输入"
 
-    def _format_detail_lines(self, details: list) -> str:
+    def _format_detail_lines(
+        self, details: list, limit: Optional[int] = None
+    ) -> str:
         """格式化检查详情"""
         if not details:
             return ""
 
+        limit = limit or self.MAX_DETAIL_LINES
         lines = []
-        for detail in details[:self.MAX_DETAIL_LINES]:
+        for detail in details[:limit]:
             detail = self._truncate_display(
                 detail, self.MAX_DETAIL_LINE_LENGTH - 2
             )
             lines.append(f"• {self.escape_markdown(detail)}")
 
-        remaining = len(details) - self.MAX_DETAIL_LINES
+        remaining = len(details) - limit
         if remaining > 0:
             lines.append(f"• 另有 {remaining} 条详情未显示")
 
         return "\n".join(lines)
+
+    def _build_query_summary_text(
+        self,
+        domain: str,
+        github_result: dict,
+        in_geosite: bool,
+        check_result: dict,
+        conclusion: str,
+    ) -> str:
+        """Build the default query page as a compact decision summary."""
+        github_unavailable = bool(github_result.get("error"))
+        github_exists = bool(github_result.get("exists"))
+        check_failed = "error" in check_result
+        matches = github_result.get("matches", [])
+        visible_domain = self._truncate_display(domain, 56)
+
+        if github_unavailable:
+            github_status = "暂时无法读取"
+        elif github_exists:
+            github_status = f"已存在（{len(matches)} 条匹配）"
+        else:
+            github_status = "未找到"
+
+        lines = [
+            conclusion,
+            "",
+            f"`{visible_domain}`",
+            "",
+            "*状态摘要*",
+            f"GitHub：{github_status}",
+            f"GEOSITE:CN：{'已存在' if in_geosite else '未找到'}",
+        ]
+        if check_failed:
+            lines.append("网络检查：暂时无法完成")
+            return "\n".join(lines)
+
+        signals = []
+        if check_result.get("domain_china_status"):
+            signals.append("输入域名 IP")
+        if check_result.get("second_level_china_status"):
+            signals.append("可注册域名 IP")
+        if check_result.get("ns_china_status"):
+            signals.append("NS")
+        normalized_domain = check_result.get("normalized_domain")
+        registered_domain = check_result.get("second_level_domain")
+        input_ip_count = len(check_result.get("domain_ips", []) or [])
+        registered_ip_count = len(
+            check_result.get("second_level_ips", []) or []
+        )
+        if (
+            normalized_domain
+            and registered_domain
+            and normalized_domain == registered_domain
+        ):
+            resolution_status = (
+                f"解析记录：输入 {input_ip_count} · 主域名同输入"
+            )
+        else:
+            resolution_status = (
+                f"解析记录：输入 {input_ip_count} · "
+                f"可注册域名 {registered_ip_count}"
+            )
+        lines.extend(
+            [
+                f"大陆信号：{'、'.join(signals) if signals else '未检测到'}",
+                resolution_status,
+            ]
+        )
+        recommendation = str(check_result.get("recommendation", "")).strip()
+        if (
+            recommendation
+            and not github_unavailable
+            and not github_exists
+            and not in_geosite
+        ):
+            visible = self._truncate_display(recommendation, 48)
+            lines.append(f"判断：{self.escape_markdown(visible)}")
+        return "\n".join(lines)
+
+    def _build_query_detail_text(
+        self,
+        domain: str,
+        github_result: dict,
+        check_result: dict,
+    ) -> str:
+        """Build a bounded technical page without repeating the summary."""
+        visible_domain = self._truncate_display(domain, 56)
+        lines = ["🔎 *技术详情*", "", f"`{visible_domain}`"]
+        github_unavailable = bool(github_result.get("error"))
+        matches = github_result.get("matches", [])
+        if github_unavailable:
+            lines.extend(["", "*规则命中*", "GitHub 规则暂时无法读取"])
+        elif matches:
+            lines.extend(
+                ["", "*规则命中*", self._format_rule_matches(matches)]
+            )
+
+        if "error" in check_result:
+            lines.extend(["", "*网络检查*", "暂时无法完成，请稍后重试。"])
+        else:
+            domain_ips = self._format_value_list(check_result.get("domain_ips", []))
+            registered_ips = self._format_value_list(
+                check_result.get("second_level_ips", [])
+            )
+            if domain_ips or registered_ips:
+                lines.extend(["", "*解析结果*"])
+                if domain_ips:
+                    lines.extend(["输入域名 IP", domain_ips])
+                if registered_ips:
+                    lines.extend(["可注册域名 IP", registered_ips])
+            detail_lines = self._format_detail_lines(check_result.get("details", []))
+            if detail_lines:
+                lines.extend(["", "*归属检查*", detail_lines])
+
+        if len(lines) == 3:
+            lines.extend(["", "暂无更多技术详情。"])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_query_result_keyboard(
+        token: str,
+        *,
+        detail: bool,
+        add_callback: str = "",
+    ) -> InlineKeyboardMarkup:
+        keyboard = []
+        if add_callback:
+            keyboard.append(
+                [InlineKeyboardButton("➕ 添加到直连规则", callback_data=add_callback)]
+            )
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    "↩️ 返回摘要" if detail else "🔎 技术详情",
+                    callback_data=(
+                        f"query_summary|{token}"
+                        if detail
+                        else f"query_details|{token}"
+                    ),
+                )
+            ]
+        )
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    "🔍 查询其他域名", callback_data="query_domain"
+                ),
+                InlineKeyboardButton("🏠 返回首页", callback_data="main_menu"),
+            ]
+        )
+        return InlineKeyboardMarkup(keyboard)
 
     def _build_query_prompt(self, stats_text: str) -> str:
         """构建查询提示文案"""
@@ -1157,6 +1418,33 @@ class HandlerManager:
                 await query.answer("当前会话不在允许范围内", show_alert=True)
                 return
             data = query.data
+            chat_type = getattr(update.effective_chat, "type", None)
+            is_admin_force_callback = data.startswith(
+                (
+                    "admin_force_add|",
+                    "admin_force_add_confirm|",
+                    "admin_force_add_cancel|",
+                )
+            )
+            is_group_admin_force = (
+                chat_type in ("group", "supergroup")
+                and is_admin_force_callback
+            )
+            if (
+                chat_type in ("group", "supergroup")
+                and not is_group_admin_force
+            ):
+                await query.answer(
+                    "此按钮仅用于私聊；请私聊机器人继续操作。",
+                    show_alert=True,
+                )
+                return
+            user_id = update.effective_user.id
+            if is_group_admin_force:
+                await self._handle_admin_force_add_callback(
+                    query, user_id, data
+                )
+                return
             self_service_callbacks = {
                 GroupService.MEMBERSHIP_RETRY_CALLBACK,
                 "matchscope_access",
@@ -1176,12 +1464,15 @@ class HandlerManager:
             )
             # MatchScope issuance performs its own fresh membership check;
             # access, revocation and credential deletion remain available.
-            if not is_self_service_callback and not await self.check_group_membership(update):
+            if (
+                not is_self_service_callback
+                and not is_group_admin_force
+                and not await self.check_group_membership(update)
+            ):
                 return
             
             await query.answer()
             
-            user_id = update.effective_user.id
             if data == "main_menu":
                 await self._show_main_menu(query, user_id)
             elif data == GroupService.MEMBERSHIP_RETRY_CALLBACK:
@@ -1221,13 +1512,21 @@ class HandlerManager:
                 await self._withdraw_matchscope_privacy(query, user_id)
             elif data.startswith("matchscope_privacy_withdraw_confirm|"):
                 await self._confirm_matchscope_privacy_withdraw(query, user_id, data)
+            elif data.startswith("query_details|"):
+                await self._show_query_result_page(
+                    query, user_id, data, detail=True
+                )
+            elif data.startswith("query_summary|"):
+                await self._show_query_result_page(
+                    query, user_id, data, detail=False
+                )
             elif data.startswith("add_domain|"):
                 await self._handle_add_domain_callback(query, user_id, data)
             elif data.startswith("confirm_add|"):
                 await self._handle_confirm_add_callback(query, user_id, data)
             elif data == "skip_description":
                 await self._handle_skip_description(query, user_id)
-            elif data.startswith("admin_force_add|"):
+            elif is_admin_force_callback:
                 await self._handle_admin_force_add_callback(query, user_id, data)
             else:
                 await query.edit_message_text(
@@ -1804,54 +2103,21 @@ class HandlerManager:
             else:
                 conclusion = "ℹ️ *暂不建议添加*"
 
-            lines = [conclusion, "", f"`{domain}`", "", "*覆盖情况*"]
-            if github_unavailable:
-                lines.append("GitHub 规则：暂时无法读取")
-            elif github_exists:
-                lines.append("GitHub 规则：已存在")
-                matches = self._format_rule_matches(github_result.get("matches", []))
-                if matches:
-                    lines.append(matches)
-            else:
-                lines.append("GitHub 规则：未找到")
-            lines.append(
-                "GEOSITE:CN：已存在"
-                if in_geosite
-                else "GEOSITE:CN：未找到"
+            summary_text = self._build_query_summary_text(
+                domain,
+                github_result,
+                in_geosite,
+                check_result,
+                conclusion,
+            )
+            detail_text = self._build_query_detail_text(
+                domain, github_result, check_result
             )
 
-            if check_failed:
-                lines.extend(
-                    ["", "*网络检查*", "暂时无法完成，请稍后重试。"]
-                )
-            else:
-                domain_ips = self._format_value_list(check_result.get("domain_ips", []))
-                registered_ips = self._format_value_list(
-                    check_result.get("second_level_ips", [])
-                )
-                if domain_ips or registered_ips:
-                    lines.extend(["", "*解析结果*"])
-                    if domain_ips:
-                        lines.extend(["输入域名 IP", domain_ips])
-                    if registered_ips:
-                        lines.extend(["可注册域名 IP", registered_ips])
-                detail_lines = self._format_detail_lines(check_result.get("details", []))
-                if detail_lines:
-                    lines.extend(["", "*归属检查*", detail_lines])
-                recommendation = str(check_result.get("recommendation", "")).strip()
-                if recommendation:
-                    lines.extend(
-                        [
-                            "",
-                            "*判断*",
-                            self.escape_markdown(
-                                self._truncate_display(recommendation)
-                            ),
-                        ]
-                    )
-            result_text = "\n".join(lines)
-
-            keyboard = []
+            self._discard_pending_actions(
+                user_id, {"query_result_pages", "add_domain"}
+            )
+            add_callback = ""
             if (
                 not github_unavailable
                 and not github_exists
@@ -1860,13 +2126,23 @@ class HandlerManager:
                 and has_china_signal
             ):
                 token = self.create_pending_action(user_id, "add_domain", domain=domain)
-                keyboard.append([InlineKeyboardButton("➕ 添加到直连规则", callback_data=f"add_domain|{token}")])
-            keyboard.append([InlineKeyboardButton("🔍 查询其他域名", callback_data="query_domain")])
-            keyboard.append([InlineKeyboardButton("🏠 返回首页", callback_data="main_menu")])
+                add_callback = f"add_domain|{token}"
+
+            page_token = self.create_pending_action(
+                user_id,
+                "query_result_pages",
+                summary_text=summary_text,
+                detail_text=detail_text,
+                add_callback=add_callback,
+            )
 
             await processing_msg.edit_text(
-                result_text,
-                reply_markup=InlineKeyboardMarkup(keyboard),
+                summary_text,
+                reply_markup=self._build_query_result_keyboard(
+                    page_token,
+                    detail=False,
+                    add_callback=add_callback,
+                ),
                 parse_mode='Markdown',
             )
             self.set_user_state(user_id, "waiting_query_domain")
@@ -1882,6 +2158,42 @@ class HandlerManager:
                 await update.message.reply_text(
                     text, reply_markup=markup, parse_mode="Markdown"
                 )
+
+    async def _show_query_result_page(
+        self, query, user_id: int, data: str, *, detail: bool
+    ) -> None:
+        """Switch between a cached query summary and its technical details."""
+        token = data.split("|", 1)[1] if "|" in data else ""
+        page = self.get_pending_action(
+            user_id,
+            token,
+            "query_result_pages",
+            consume=False,
+        )
+        if not page:
+            await query.edit_message_text(
+                "⌛ *查询详情已过期*\n\n请重新查询域名。",
+                reply_markup=self._recovery_keyboard(
+                    "query_domain", "🔍 重新查询"
+                ),
+                parse_mode="Markdown",
+            )
+            return
+
+        try:
+            await query.edit_message_text(
+                page["detail_text"] if detail else page["summary_text"],
+                reply_markup=self._build_query_result_keyboard(
+                    token,
+                    detail=detail,
+                    add_callback=page.get("add_callback", ""),
+                ),
+                parse_mode="Markdown",
+            )
+        except BadRequest as e:
+            if "message is not modified" not in str(e).lower():
+                raise
+        self.set_user_state(user_id, "waiting_query_domain")
     
     async def _handle_add_domain_input(self, update: Update, domain_input: str, user_id: int):
         """处理添加域名输入"""
@@ -2117,9 +2429,9 @@ class HandlerManager:
                 )
                 keyboard.append([InlineKeyboardButton("✅ 确认公开提交", callback_data=f"confirm_add|yes|{token}")])
                 keyboard.append([InlineKeyboardButton("↩️ 取消", callback_data=f"confirm_add|no|{token}")])
-            
+
             keyboard.append([InlineKeyboardButton("🏠 返回首页", callback_data="main_menu")])
-            
+
             reply_markup = InlineKeyboardMarkup(keyboard)
             await processing_msg.edit_text(result_text, reply_markup=reply_markup, parse_mode='Markdown')
 
@@ -2159,6 +2471,7 @@ class HandlerManager:
                     parse_mode="Markdown",
                 )
                 return
+            self._discard_pending_actions(user_id, {"query_result_pages"})
             domain = action.get("domain", "")
             
             # 进行域名检查
@@ -2209,9 +2522,14 @@ class HandlerManager:
                             callback_data=self.get_admin_force_add_callback(user_id, domain)
                         )
                     ])
-            
+                keyboard.append([
+                    InlineKeyboardButton(
+                        "➕ 添加其他域名", callback_data="add_direct_rule"
+                    )
+                ])
+
             keyboard.append([InlineKeyboardButton("🏠 返回首页", callback_data="main_menu")])
-            
+
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(result_text, reply_markup=reply_markup, parse_mode='Markdown')
 
@@ -2233,31 +2551,99 @@ class HandlerManager:
         """处理管理员权限强制添加回调"""
         write_attempted = False
         target_domain = ""
+        add_result = None
+        result_text = ""
+        chat = getattr(getattr(query, "message", None), "chat", None)
+        is_private_chat = getattr(chat, "type", None) == "private"
+
+        def page_markup(markup):
+            return markup if is_private_chat else None
+
+        def group_next(text: str, *, retry: bool = False) -> str:
+            if is_private_chat:
+                return text
+            instruction = (
+                "请稍后重新 @机器人并附带域名。"
+                if retry
+                else "继续处理请重新 @机器人并附带域名。"
+            )
+            return f"{text}\n\n{instruction}"
+
+        async def answer_group(
+            text: str = "", *, show_alert: bool = False
+        ) -> bool:
+            try:
+                if text:
+                    await query.answer(text, show_alert=show_alert)
+                else:
+                    await query.answer()
+                return True
+            except Exception as answer_error:
+                logger.warning(f"群聊管理员按钮应答失败: {answer_error}")
+                return False
+
         try:
             if not self.is_admin(user_id):
                 logger.warning(f"管理员权限操作被拒绝: user_id={user_id}, data={data}")
+                if not is_private_chat:
+                    await answer_group(
+                        "此按钮仅供发起操作的管理员使用。",
+                        show_alert=True,
+                    )
+                    return
                 await query.edit_message_text(
                     "⛔ *没有管理员权限*\n\n"
                     "当前账号不能执行强制添加。",
-                    reply_markup=self._recovery_keyboard(),
+                    reply_markup=page_markup(self._recovery_keyboard()),
                     parse_mode="Markdown",
                 )
                 return
 
+            action_name = data.split("|", 1)[0]
             token = data.split("|", 1)[1] if "|" in data else ""
+            is_decision = action_name in {
+                "admin_force_add_confirm",
+                "admin_force_add_cancel",
+            }
+            expected_action = (
+                "admin_force_add_decision"
+                if is_decision
+                else "admin_force_add"
+            )
+            if not is_private_chat:
+                action = self.get_pending_action(
+                    user_id,
+                    token,
+                    expected_action,
+                    consume=False,
+                )
+                if not action:
+                    await answer_group(
+                        "按钮已失效或不属于当前账号，请重新 @机器人。",
+                        show_alert=True,
+                    )
+                    return
+                if not await answer_group():
+                    return
             action = self.get_pending_action(
                 user_id,
                 token,
-                "admin_force_add",
+                expected_action,
                 consume=True,
             )
             if not action:
+                if not is_private_chat:
+                    return
                 await query.edit_message_text(
-                    "⌛ *操作已过期*\n\n"
-                    "尚未提交或修改任何规则。\n"
-                    "请重新开始。",
-                    reply_markup=self._recovery_keyboard(
-                        "add_direct_rule", "➕ 重新检查"
+                    group_next(
+                        "⌛ *操作已过期*\n\n"
+                        "尚未提交或修改任何规则。\n"
+                        "请重新开始。"
+                    ),
+                    reply_markup=page_markup(
+                        self._recovery_keyboard(
+                            "add_direct_rule", "➕ 重新检查"
+                        )
                     ),
                     parse_mode="Markdown",
                 )
@@ -2267,22 +2653,79 @@ class HandlerManager:
             domain = extract_second_level_domain_for_rules(domain)
             if not domain:
                 await query.edit_message_text(
-                    "⚠️ *域名格式无效*\n\n"
-                    "尚未提交或修改任何规则。",
-                    reply_markup=self._recovery_keyboard(
-                        "add_direct_rule", "➕ 重新开始"
+                    group_next(
+                        "⚠️ *域名格式无效*\n\n"
+                        "尚未提交或修改任何规则。"
                     ),
+                    reply_markup=page_markup(
+                        self._recovery_keyboard(
+                            "add_direct_rule", "➕ 重新开始"
+                        )
+                    ),
+                    parse_mode="Markdown",
+                )
+                return
+
+            if action_name == "admin_force_add_cancel":
+                await self._display_callback_result(
+                    query,
+                    group_next(
+                        "↩️ *已取消管理员权限添加*\n\n"
+                        "本次没有提交或修改任何规则。"
+                    ),
+                    page_markup(self._recovery_keyboard()),
+                )
+                return
+
+            if action_name == "admin_force_add":
+                decision_token = self.create_pending_action(
+                    user_id,
+                    "admin_force_add_decision",
+                    domain=domain,
+                )
+                confirmation_markup = InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                "⚠️ 确认立即公开提交",
+                                callback_data=(
+                                    "admin_force_add_confirm|"
+                                    f"{decision_token}"
+                                ),
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                "↩️ 取消",
+                                callback_data=(
+                                    "admin_force_add_cancel|"
+                                    f"{decision_token}"
+                                ),
+                            )
+                        ],
+                    ]
+                )
+                await query.edit_message_text(
+                    "🛡️ *确认管理员权限添加*\n\n"
+                    f"`DOMAIN-SUFFIX,{domain}`\n\n"
+                    "这会跳过系统判断并立即公开写入 GitHub。\n"
+                    "当前删除功能尚未开放，请确认规则无误。",
+                    reply_markup=confirmation_markup,
                     parse_mode="Markdown",
                 )
                 return
 
             if is_cn_domain(domain):
                 await query.edit_message_text(
-                    "ℹ️ *.cn 域名已默认直连*\n\n"
-                    f"`{domain}`\n\n"
-                    "无需手动添加。",
-                    reply_markup=self._recovery_keyboard(
-                        "add_direct_rule", "➕ 添加其他域名"
+                    group_next(
+                        "ℹ️ *.cn 域名已默认直连*\n\n"
+                        f"`{domain}`\n\n"
+                        "无需手动添加。"
+                    ),
+                    reply_markup=page_markup(
+                        self._recovery_keyboard(
+                            "add_direct_rule", "➕ 添加其他域名"
+                        )
                     ),
                     parse_mode='Markdown'
                 )
@@ -2300,7 +2743,7 @@ class HandlerManager:
                     "⚠️ *本小时添加次数已用完*\n\n"
                     f"每小时最多添加 {self.MAX_ADDS_PER_HOUR} 个域名。\n"
                     "请在下一小时再试。",
-                    reply_markup=reply_markup,
+                    reply_markup=page_markup(reply_markup),
                     parse_mode='Markdown'
                 )
                 return
@@ -2309,11 +2752,16 @@ class HandlerManager:
             github_result = await self.github_service.check_domain_in_rules(domain)
             if github_result.get("error"):
                 await query.edit_message_text(
-                    "❌ *暂时无法读取 GitHub 规则*\n\n"
-                    "本次没有提交任何规则。\n"
-                    "请稍后重试。",
-                    reply_markup=self._recovery_keyboard(
-                        "add_direct_rule", "➕ 重新检查"
+                    group_next(
+                        "❌ *暂时无法读取 GitHub 规则*\n\n"
+                        "本次没有提交任何规则。\n"
+                        "请稍后重试。",
+                        retry=True,
+                    ),
+                    reply_markup=page_markup(
+                        self._recovery_keyboard(
+                            "add_direct_rule", "➕ 重新检查"
+                        )
                     ),
                     parse_mode="Markdown",
                 )
@@ -2331,7 +2779,11 @@ class HandlerManager:
                     [InlineKeyboardButton("🏠 返回首页", callback_data="main_menu")]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.edit_message_text(result_text, reply_markup=reply_markup, parse_mode='Markdown')
+                await query.edit_message_text(
+                    group_next(result_text),
+                    reply_markup=page_markup(reply_markup),
+                    parse_mode='Markdown',
+                )
                 return
 
             in_geosite = await self.data_manager.is_domain_in_geosite(domain)
@@ -2345,18 +2797,27 @@ class HandlerManager:
                     [InlineKeyboardButton("🏠 返回首页", callback_data="main_menu")]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.edit_message_text(result_text, reply_markup=reply_markup, parse_mode='Markdown')
+                await query.edit_message_text(
+                    group_next(result_text),
+                    reply_markup=page_markup(reply_markup),
+                    parse_mode='Markdown',
+                )
                 return
 
             await query.edit_message_text("⏳ 正在执行管理员强制添加…")
             check_result = await self.domain_checker.check_domain_comprehensive(domain)
             if "error" in check_result:
                 await query.edit_message_text(
-                    "❌ *域名检查失败*\n\n"
-                    "本次没有提交任何规则。\n"
-                    "请稍后重试。",
-                    reply_markup=self._recovery_keyboard(
-                        "add_direct_rule", "➕ 重新检查"
+                    group_next(
+                        "❌ *域名检查失败*\n\n"
+                        "本次没有提交任何规则。\n"
+                        "请稍后重试。",
+                        retry=True,
+                    ),
+                    reply_markup=page_markup(
+                        self._recovery_keyboard(
+                            "add_direct_rule", "➕ 重新检查"
+                        )
                     ),
                     parse_mode="Markdown",
                 )
@@ -2384,17 +2845,17 @@ class HandlerManager:
                     admin=True,
                 )
             else:
-                result_text = "❌ *域名添加失败*\n\n"
-                result_text += f"`{target_domain}`\n\n"
-                result_text += "本次没有修改任何规则。\n请稍后重试。"
+                result_text = self._build_add_failure_text(
+                    target_domain, add_result
+                )
 
-            keyboard = [
-                [InlineKeyboardButton("➕ 继续添加", callback_data="add_direct_rule")],
-                [InlineKeyboardButton("🏠 返回首页", callback_data="main_menu")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
+            reply_markup = self._build_add_result_keyboard(add_result)
 
-            await query.edit_message_text(result_text, reply_markup=reply_markup, parse_mode='Markdown')
+            await self._display_callback_result(
+                query,
+                group_next(result_text, retry=not add_result.get("success")),
+                page_markup(reply_markup),
+            )
             if add_result.get("success"):
                 await self._announce_private_addition(
                     getattr(query.message, "chat", None),
@@ -2402,21 +2863,45 @@ class HandlerManager:
                     add_result,
                     username,
                 )
-            self.set_user_state(user_id, "waiting_add_domain")
+            if is_private_chat:
+                next_state = (
+                    "waiting_query_domain"
+                    if add_result.get("submission_uncertain")
+                    else "waiting_add_domain"
+                )
+                self.set_user_state(user_id, next_state)
 
         except Exception as e:
             logger.error(f"处理管理员权限添加失败: {e}")
-            text = (
-                self._build_submission_uncertain_text(target_domain)
-                if write_attempted
-                else "❌ *强制添加失败*\n\n本次没有修改任何规则。"
-            )
-            await query.edit_message_text(
-                text,
-                reply_markup=self._recovery_keyboard(
-                    "add_direct_rule", "➕ 重新检查"
-                ),
-                parse_mode="Markdown",
+            confirmed_success = bool(add_result and add_result.get("success"))
+            if confirmed_success:
+                text = result_text or self._build_confirmed_add_fallback_text(
+                    target_domain, add_result
+                )
+                recovery_markup = self._build_add_result_keyboard(add_result)
+            else:
+                text = (
+                    self._build_submission_uncertain_text(target_domain)
+                    if write_attempted
+                    else "❌ *强制添加失败*\n\n本次没有修改任何规则。"
+                )
+                recovery_markup = self._recovery_keyboard(
+                    "query_domain" if write_attempted else "add_direct_rule",
+                    "🔍 前往查询" if write_attempted else "➕ 重新检查",
+                )
+            if is_private_chat:
+                self.set_user_state(
+                    user_id,
+                    "waiting_add_domain"
+                    if confirmed_success
+                    else "waiting_query_domain"
+                    if write_attempted
+                    else "waiting_add_domain",
+                )
+            await self._display_callback_result(
+                query,
+                group_next(text, retry=not confirmed_success),
+                page_markup(recovery_markup),
             )
     
     async def _handle_confirm_add_callback(self, query, user_id: int, data: str):
@@ -2556,6 +3041,8 @@ class HandlerManager:
         """添加域名到 GitHub"""
         write_attempted = False
         target_domain = ""
+        add_result = None
+        result_text = ""
         try:
             user_state = self.get_user_state(user_id)
             domain_data = user_state.get("data", {})
@@ -2614,15 +3101,17 @@ class HandlerManager:
                     description,
                 )
             else:
-                result_text = self._build_add_failure_text(target_domain)
+                result_text = self._build_add_failure_text(
+                    target_domain, add_result
+                )
             
-            keyboard = [
-                [InlineKeyboardButton("➕ 继续添加", callback_data="add_direct_rule")],
-                [InlineKeyboardButton("🏠 返回首页", callback_data="main_menu")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await query.edit_message_text(result_text, reply_markup=reply_markup, parse_mode='Markdown')
+            reply_markup = self._build_add_result_keyboard(add_result)
+
+            await self._display_callback_result(
+                query,
+                result_text,
+                reply_markup,
+            )
             if add_result.get("success"):
                 await self._announce_private_addition(
                     getattr(query.message, "chat", None),
@@ -2632,25 +3121,42 @@ class HandlerManager:
                 )
             
             # 保持添加模式，便于继续输入域名
-            self.set_user_state(user_id, "waiting_add_domain")
+            next_state = (
+                "waiting_query_domain"
+                if add_result.get("submission_uncertain")
+                else "waiting_add_domain"
+            )
+            self.set_user_state(user_id, next_state)
             
         except Exception as e:
             logger.error(f"添加域名到 GitHub 失败: {e}")
-            text = (
-                self._build_submission_uncertain_text(target_domain)
-                if write_attempted
-                else (
-                    "❌ *直连规则添加失败*\n\n"
-                    "本次没有修改任何规则。\n"
-                    "请稍后重试。"
+            confirmed_success = bool(add_result and add_result.get("success"))
+            if confirmed_success:
+                text = result_text or self._build_confirmed_add_fallback_text(
+                    target_domain, add_result
                 )
-            )
-            await query.edit_message_text(
+                markup = self._build_add_result_keyboard(add_result)
+                self.set_user_state(user_id, "waiting_add_domain")
+            else:
+                text = (
+                    self._build_submission_uncertain_text(target_domain)
+                    if write_attempted
+                    else (
+                        "❌ *直连规则添加失败*\n\n"
+                        "本次没有修改任何规则。\n"
+                        "请稍后重试。"
+                    )
+                )
+                markup = self._recovery_keyboard(
+                    "query_domain" if write_attempted else "add_direct_rule",
+                    "🔍 前往查询" if write_attempted else "➕ 重新开始",
+                )
+                if write_attempted:
+                    self.set_user_state(user_id, "waiting_query_domain")
+            await self._display_callback_result(
+                query,
                 text,
-                reply_markup=self._recovery_keyboard(
-                    "add_direct_rule", "➕ 重新开始"
-                ),
-                parse_mode="Markdown",
+                markup,
             )
     
     async def _add_domain_to_github_message(self, message, user_id: int, description: str):
@@ -2658,6 +3164,8 @@ class HandlerManager:
         processing_msg = None
         write_attempted = False
         target_domain = ""
+        add_result = None
+        result_text = ""
         try:
             user_state = self.get_user_state(user_id)
             domain_data = user_state.get("data", {})
@@ -2701,15 +3209,18 @@ class HandlerManager:
                     description,
                 )
             else:
-                result_text = self._build_add_failure_text(target_domain)
+                result_text = self._build_add_failure_text(
+                    target_domain, add_result
+                )
             
-            keyboard = [
-                [InlineKeyboardButton("➕ 继续添加", callback_data="add_direct_rule")],
-                [InlineKeyboardButton("🏠 返回首页", callback_data="main_menu")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await processing_msg.edit_text(result_text, reply_markup=reply_markup, parse_mode='Markdown')
+            reply_markup = self._build_add_result_keyboard(add_result)
+
+            await self._display_message_result(
+                message,
+                processing_msg,
+                result_text,
+                reply_markup,
+            )
             if add_result.get("success"):
                 await self._announce_private_addition(
                     getattr(message, "chat", None),
@@ -2719,27 +3230,43 @@ class HandlerManager:
                 )
             
             # 保持添加模式，便于继续输入域名
-            self.set_user_state(user_id, "waiting_add_domain")
+            next_state = (
+                "waiting_query_domain"
+                if add_result.get("submission_uncertain")
+                else "waiting_add_domain"
+            )
+            self.set_user_state(user_id, next_state)
             
         except Exception as e:
             logger.error(f"添加域名到 GitHub 失败: {e}")
-            text = (
-                self._build_submission_uncertain_text(target_domain)
-                if write_attempted
-                else (
-                    "❌ *直连规则添加失败*\n\n"
-                    "本次没有修改任何规则。\n"
-                    "请稍后重试。"
+            confirmed_success = bool(add_result and add_result.get("success"))
+            if confirmed_success:
+                text = result_text or self._build_confirmed_add_fallback_text(
+                    target_domain, add_result
                 )
-            )
-            markup = self._recovery_keyboard("add_direct_rule", "➕ 重新开始")
-            if processing_msg is not None:
-                await processing_msg.edit_text(
-                    text, reply_markup=markup, parse_mode="Markdown"
-                )
+                markup = self._build_add_result_keyboard(add_result)
+                self.set_user_state(user_id, "waiting_add_domain")
             else:
-                await message.reply_text(
-                    text, reply_markup=markup, parse_mode="Markdown"
+                text = (
+                    self._build_submission_uncertain_text(target_domain)
+                    if write_attempted
+                    else (
+                        "❌ *直连规则添加失败*\n\n"
+                        "本次没有修改任何规则。\n"
+                        "请稍后重试。"
+                    )
                 )
+                markup = self._recovery_keyboard(
+                    "query_domain" if write_attempted else "add_direct_rule",
+                    "🔍 前往查询" if write_attempted else "➕ 重新开始",
+                )
+                if write_attempted:
+                    self.set_user_state(user_id, "waiting_query_domain")
+            await self._display_message_result(
+                message,
+                processing_msg,
+                text,
+                markup,
+            )
 
  

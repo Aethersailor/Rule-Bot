@@ -114,13 +114,13 @@ class DomainChecker:
                         location = self.geoip_service.get_location_info(ip)
                         if location["is_china"]:
                             china_ips.append(ip)
-                        result["details"].append(f"二级域名 IP {ip}: {location['country_name']}")
+                        result["details"].append(f"可注册域名 IP {ip}: {location['country_name']}")
                     
                     result["second_level_china_status"] = len(china_ips) > 0
                     if china_ips:
-                        result["details"].append(f"二级域名有 {len(china_ips)} 个中国 IP")
+                        result["details"].append(f"可注册域名有 {len(china_ips)} 个中国 IP")
                 else:
-                    result["details"].append("无法解析二级域名 IP")
+                    result["details"].append("无法解析可注册域名 IP")
             
             # 3. 处理并发查询得到的 NS 服务器
             result["ns_servers"] = ns_servers
@@ -210,7 +210,7 @@ class DomainChecker:
             
             # 决定添加哪个域名（始终使用二级域名）
             target_domain = check_result["second_level_domain"] if check_result["second_level_domain"] else check_result["normalized_domain"]
-            domain_type = "二级域名"
+            domain_type = "可注册域名"
             
             # 判断是否有中国 IP（优先二级域名 IP）
             has_china_ip = second_level_china or domain_china

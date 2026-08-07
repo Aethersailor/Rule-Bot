@@ -322,18 +322,26 @@ class GroupHandler:
                 error = self._escape_detail(
                     result.get("message", "未知错误")
                 )
-                result_text = (
-                    "❌ *处理失败*\n\n"
-                    f"`{safe_domain}`\n\n"
-                    f"{error}\n\n"
-                    "请稍后再次 @机器人。"
-                )
+                if result.get("submission_uncertain"):
+                    result_text = (
+                        "⚠️ *提交结果暂时无法确认*\n\n"
+                        f"`{safe_domain}`\n\n"
+                        "请先查询规则或查看 GitHub，避免重复提交。"
+                    )
+                else:
+                    result_text = (
+                        "❌ *处理失败*\n\n"
+                        f"`{safe_domain}`\n\n"
+                        f"{error}\n\n"
+                        "请稍后再次 @机器人。"
+                    )
 
             await processing_msg.edit_text(result_text, reply_markup=reply_markup, parse_mode='Markdown')
             
         except Exception as e:
             logger.error(f"处理域名请求失败: {e}")
             added = bool(result and result.get("action") == "added")
+            uncertain = bool(result and result.get("submission_uncertain"))
             visible_domain = (
                 result.get("target_domain", domain) if added else domain
             )
@@ -343,6 +351,12 @@ class GroupHandler:
                     "⚠️ *规则已添加，但结果页更新失败*\n\n"
                     f"`DOMAIN-SUFFIX,{safe_domain}`\n\n"
                     "请先查看 GitHub，避免重复提交。"
+                )
+            elif uncertain:
+                text = (
+                    "⚠️ *提交结果暂时无法确认*\n\n"
+                    f"`{safe_domain}`\n\n"
+                    "请先查询规则或查看 GitHub，避免重复提交。"
                 )
             else:
                 text = (

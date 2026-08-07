@@ -141,6 +141,47 @@ class TestRuntimeSafety(unittest.IsolatedAsyncioTestCase):
             ]
         )
 
+    async def test_add_gate_keeps_uncertain_write_reserved(self):
+        manager = self._make_rate_limited_manager(
+            max_adds=1,
+            add_result={
+                "success": False,
+                "submission_uncertain": True,
+                "error": "response lost after request",
+            },
+        )
+
+        uncertain = await manager._add_domain_with_limit(
+            123,
+            "one.example",
+            "Alice",
+        )
+        retry = await manager._add_domain_with_limit(
+            123,
+            "two.example",
+            "Alice",
+        )
+
+        self.assertTrue(uncertain["submission_uncertain"])
+        self.assertEqual(len(manager.user_add_history[123]), 1)
+        self.assertTrue(retry["rate_limited"])
+        manager.github_service.add_domain_to_rules.assert_awaited_once()
+
+    async def test_add_gate_preserves_marked_cancelled_write(self):
+        manager = self._make_rate_limited_manager(max_adds=1)
+        cancelled = asyncio.CancelledError()
+        cancelled.submission_uncertain = True
+        manager.github_service.add_domain_to_rules.side_effect = cancelled
+
+        with self.assertRaises(asyncio.CancelledError):
+            await manager._add_domain_with_limit(
+                123,
+                "example.com",
+                "Alice",
+            )
+
+        self.assertEqual(len(manager.user_add_history[123]), 1)
+
     async def test_add_gate_rolls_back_cancelled_write(self):
         manager = self._make_rate_limited_manager()
         manager.github_service.add_domain_to_rules.side_effect = (

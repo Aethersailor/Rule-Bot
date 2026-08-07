@@ -89,8 +89,8 @@ class TestGroupAnnouncements(unittest.IsolatedAsyncioTestCase):
         self.assertIn("直连规则已更新", kwargs["text"])
         self.assertIn("DOMAIN-SUFFIX", kwargs["text"])
         self.assertIn("example.com", kwargs["text"])
-        self.assertIn("example/repo", kwargs["text"])
-        self.assertIn("rules/direct.list", kwargs["text"])
+        self.assertNotIn("example/repo", kwargs["text"])
+        self.assertNotIn("rules/direct.list", kwargs["text"])
         self.assertIn("提交者", kwargs["text"])
         self.assertIn("Alice\\_Name", kwargs["text"])
         commit_button = kwargs["reply_markup"].inline_keyboard[0][0]

@@ -36,18 +36,20 @@ class GroupHandler:
     def _build_missing_domain_text(self) -> str:
         return (
             "⚠️ *没有识别到域名*\n\n"
-            "请再次 @我，并附带域名或 URL。\n\n"
-            "*示例域名*\n"
+            "📝 请重新 @机器人，并在同一条消息中附带域名或 URL。\n\n"
+            "🧪 *输入示例*\n"
             "`example.com`\n\n"
-            "也可以回复一条含域名的消息，再 @我。"
+            "💬 也可以回复一条包含域名的消息，再 @机器人。"
         )
 
     def _build_cn_domain_text(self, domain: str) -> str:
         safe_domain = self._escape_inline_code(domain)
         return (
             "ℹ️ *.cn 域名无需添加*\n\n"
+            "🧾 *识别结果*\n"
             f"`{safe_domain}`\n\n"
-            "此类域名默认直连。"
+            "🇨🇳 `.cn` 域名已由现有策略默认直连，\n"
+            "无需再次写入公开规则库。"
         )
     
     def __init__(self, config: Config, data_manager: DataManager, handler_manager):
@@ -246,9 +248,11 @@ class GroupHandler:
             safe_domain = self._escape_inline_code(domain)
             processing_msg = await message.reply_text(
                 "🔍 *正在检查域名*\n\n"
+                "🧾 *待检查域名*\n"
                 f"`{safe_domain}`\n\n"
-                "符合条件时，将自动写入公开 GitHub，且不再二次确认。\n\n"
-                f"提交者：{identity}",
+                "⚠️ 群聊流程不会再次要求确认；符合条件时，\n"
+                "系统将自动写入公开 GitHub 仓库。\n\n"
+                f"👤 提交者：{identity}",
                 parse_mode='Markdown',
             )
             
@@ -278,9 +282,10 @@ class GroupHandler:
                 safe_target = self._escape_inline_code(target_domain)
                 result_text = (
                     "✅ *直连规则已添加*\n\n"
+                    "🧾 *已写入规则*\n"
                     f"`DOMAIN-SUFFIX,{safe_target}`\n\n"
-                    f"提交者：{identity}\n"
-                    f"本小时剩余：{remaining} 个"
+                    f"👤 提交者：{identity}\n"
+                    f"📊 本小时还可添加：{remaining} 个域名"
                 )
                 if result.get("commit_url"):
                     short_sha = str(result.get("commit_sha", ""))[:8]
@@ -297,19 +302,25 @@ class GroupHandler:
                 detail = self._escape_detail(result.get("message", "无需重复添加"))
                 result_text = (
                     "ℹ️ *无需重复添加*\n\n"
+                    "🧾 *已检查域名*\n"
                     f"`{safe_domain}`\n\n"
-                    f"{detail}"
+                    f"📚 {detail}"
                 )
                 
             elif result["action"] == "rejected":
                 detail = self._escape_detail(result.get("message", "不符合添加条件"))
                 result_text = (
                     "⛔ *不符合添加条件*\n\n"
+                    "🧾 *已检查域名*\n"
                     f"`{safe_domain}`\n\n"
+                    "💡 *判断依据*\n"
                     f"{detail}"
                 )
                 if self.handler_manager.is_admin(user_id):
-                    result_text += "\n\n管理员可使用下方按钮强制添加。"
+                    result_text += (
+                        "\n\n🛡️ *管理员操作*\n"
+                        "管理员可使用下方按钮跳过判断并强制添加。"
+                    )
                     keyboard = [
                         [InlineKeyboardButton(
                             "🛡️ 管理员强制添加",
@@ -325,15 +336,19 @@ class GroupHandler:
                 if result.get("submission_uncertain"):
                     result_text = (
                         "⚠️ *提交结果暂时无法确认*\n\n"
+                        "🧾 *待核对域名*\n"
                         f"`{safe_domain}`\n\n"
-                        "请先查询规则或查看 GitHub，避免重复提交。"
+                        "🔎 请先查询规则或检查 GitHub 提交记录，\n"
+                        "确认尚未写入后再重试，避免重复提交。"
                     )
                 else:
                     result_text = (
                         "❌ *处理失败*\n\n"
+                        "🧾 *目标域名*\n"
                         f"`{safe_domain}`\n\n"
-                        f"{error}\n\n"
-                        "请稍后再次 @机器人。"
+                        f"💡 原因：{error}\n\n"
+                        "🛡️ 本次操作未修改任何规则。\n"
+                        "请稍后再次 @机器人并附带域名。"
                     )
 
             await processing_msg.edit_text(result_text, reply_markup=reply_markup, parse_mode='Markdown')
@@ -349,20 +364,25 @@ class GroupHandler:
             if added:
                 text = (
                     "⚠️ *规则已添加，但结果页更新失败*\n\n"
+                    "🧾 *已写入规则*\n"
                     f"`DOMAIN-SUFFIX,{safe_domain}`\n\n"
-                    "请先查看 GitHub，避免重复提交。"
+                    "🔎 请检查 GitHub 提交记录，避免重复提交。"
                 )
             elif uncertain:
                 text = (
                     "⚠️ *提交结果暂时无法确认*\n\n"
+                    "🧾 *待核对域名*\n"
                     f"`{safe_domain}`\n\n"
-                    "请先查询规则或查看 GitHub，避免重复提交。"
+                    "🔎 请先查询规则或检查 GitHub 提交记录，\n"
+                    "确认尚未写入后再重试，避免重复提交。"
                 )
             else:
                 text = (
                     "❌ *处理失败*\n\n"
+                    "🧾 *目标域名*\n"
                     f"`{safe_domain}`\n\n"
-                    "请稍后再次 @机器人。"
+                    "🛡️ 本次操作未修改任何规则。\n"
+                    "请稍后再次 @机器人并附带域名。"
                 )
             await message.reply_text(
                 text,

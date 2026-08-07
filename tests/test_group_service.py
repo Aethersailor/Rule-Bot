@@ -23,6 +23,9 @@ class TestGroupService(unittest.TestCase):
         message = service.get_join_group_message()
         keyboard = service.get_join_group_keyboard()
 
+        self.assertIn("👤 当前账号尚未通过群组成员验证", message)
+        self.assertIn("👥 *所需群组*", message)
+        self.assertIn("✅ 加入群组后", message)
         self.assertIn("group\\_name\\[test\\]", message)
         self.assertNotIn("https://t.me", message)
         self.assertEqual(
@@ -87,6 +90,8 @@ class TestGroupAnnouncements(unittest.IsolatedAsyncioTestCase):
         kwargs = bot.send_message.await_args.kwargs
         self.assertEqual(kwargs["chat_id"], -1001234567890)
         self.assertIn("直连规则已更新", kwargs["text"])
+        self.assertIn("🧾 *已写入规则*", kwargs["text"])
+        self.assertIn("👤 提交者", kwargs["text"])
         self.assertIn("DOMAIN-SUFFIX", kwargs["text"])
         self.assertIn("example.com", kwargs["text"])
         self.assertNotIn("example/repo", kwargs["text"])

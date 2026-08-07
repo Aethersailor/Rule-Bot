@@ -673,11 +673,12 @@ class HandlerManager:
     def _submission_notice(self, user) -> str:
         identity = self._format_telegram_identity(user)
         lines = [
-            "规则与提交者将进入公开 GitHub 历史。",
-            f"提交者：{identity}",
+            "🌍 *公开范围*",
+            "• 规则、提交时间与提交者将写入公开 GitHub 历史",
+            f"• 提交者：{identity}",
         ]
         if getattr(self.config, "ANNOUNCEMENT_GROUP_ID", None):
-            lines.append("提交结果还会同步至群组公告。")
+            lines.append("• 提交结果将同步至群组公告")
         return "\n".join(lines)
 
     def _build_add_review_text(self, domain: str, check_result: dict, user) -> tuple[str, str]:
@@ -692,15 +693,18 @@ class HandlerManager:
         lines = [
             conclusion,
             "",
+            "🧾 *拟提交规则*",
             f"`DOMAIN-SUFFIX,{target_domain}`",
         ]
+        if domain != target_domain:
+            lines.extend(["", "🔎 *原始输入*", f"`{domain}`"])
         recommendation = str(check_result.get("recommendation", "")).strip()
         if recommendation:
             lines.extend(
                 [
                     "",
-                    "依据："
-                    + self.escape_markdown(
+                    "💡 *判断依据*",
+                    self.escape_markdown(
                         self._truncate_display(recommendation, 56)
                     ),
                 ]
@@ -723,29 +727,32 @@ class HandlerManager:
         lines = [
             title,
             "",
+            "🧾 *已写入规则*",
             f"`DOMAIN-SUFFIX,{target_domain}`",
             "",
-            f"提交者：{self._format_telegram_identity(user)}",
+            f"👤 提交者：{self._format_telegram_identity(user)}",
         ]
         if description:
-            lines.append(f"说明：{self.escape_markdown(description)}")
+            lines.append(f"📝 公开说明：{self.escape_markdown(description)}")
         commit_url = add_result.get("commit_url", "")
         short_sha = str(add_result.get("commit_sha", ""))[:8]
         if commit_url:
             link_label = f"查看 GitHub 提交 {short_sha}" if short_sha else "查看 GitHub 提交"
-            lines.append(f"[{link_label}]({commit_url})")
-        lines.extend(["", f"本小时还可添加 {remaining} 个域名。"])
+            lines.append(f"🔗 [{link_label}]({commit_url})")
+        lines.extend(["", f"📊 本小时还可添加 {remaining} 个域名"])
         return "\n".join(lines)
 
     def _build_description_prompt_text(self, target_domain: str, user) -> str:
         return (
             "📝 *添加公开说明（可选）*\n\n"
-            "*最终规则*\n"
+            "🧾 *拟提交规则*\n"
             f"`DOMAIN-SUFFIX,{target_domain}`\n\n"
-            f"发送一行简短说明，最多 {self.MAX_DESCRIPTION_LENGTH} 个字符。\n"
-            "发送后将立即公开提交。\n\n"
-            "不需要说明可直接跳过。\n"
-            f"公开提交者：{self._format_telegram_identity(user)}"
+            "✍️ *填写要求*\n"
+            f"请发送一行简短说明，最多 {self.MAX_DESCRIPTION_LENGTH} 个字符。\n"
+            "说明发送后，系统将立即公开提交。\n\n"
+            "⏭️ 如不需要说明，可直接选择跳过。\n\n"
+            "🌍 *公开信息*\n"
+            f"提交者：{self._format_telegram_identity(user)}"
         )
 
     def _build_add_failure_text(
@@ -755,8 +762,9 @@ class HandlerManager:
             return self._build_submission_uncertain_text(target_domain)
         return (
             "❌ *直连规则添加失败*\n\n"
-            f"`{target_domain}`\n\n"
-            "本次没有修改任何规则。\n"
+            "🧾 *目标规则*\n"
+            f"`DOMAIN-SUFFIX,{target_domain}`\n\n"
+            "🛡️ 本次操作未修改任何规则。\n"
             "请稍后重试。"
         )
 
@@ -764,12 +772,14 @@ class HandlerManager:
     def _build_submission_uncertain_text(target_domain: str = "") -> str:
         lines = ["⚠️ *提交结果暂时无法确认*"]
         if target_domain:
-            lines.extend(["", f"`{target_domain}`"])
+            lines.extend(
+                ["", "🧾 *待核对规则*", f"`DOMAIN-SUFFIX,{target_domain}`"]
+            )
         lines.extend(
             [
                 "",
-                "请先查询该域名或查看 GitHub。",
-                "确认尚未添加后再重试，避免重复提交。",
+                "🔎 请先查询该域名或检查 GitHub 提交记录。",
+                "确认规则尚未写入后再重试，避免重复提交。",
             ]
         )
         return "\n".join(lines)
@@ -798,11 +808,12 @@ class HandlerManager:
         lines = [
             "✅ *直连规则已添加*",
             "",
+            "🧾 *已写入规则*",
             f"`DOMAIN-SUFFIX,{target_domain}`",
         ]
         commit_url = add_result.get("commit_url", "")
         if commit_url:
-            lines.extend(["", f"[查看 GitHub 提交]({commit_url})"])
+            lines.extend(["", f"🔗 [查看 GitHub 提交]({commit_url})"])
         return "\n".join(lines)
 
     async def _display_callback_result(
@@ -870,18 +881,23 @@ class HandlerManager:
     def _build_main_menu_text(self, username: str) -> str:
         """构建主菜单文案"""
         username = self.escape_markdown(self._truncate_display(username, 24))
+        repo = str(self.config.GITHUB_REPO).strip()
+        repo_label = self.escape_markdown(repo)
         return "\n".join(
             [
-                f"👋 *你好，{username}！*",
+                f"👋 *欢迎使用 Rule-Bot，{username}！*",
                 "",
-                "*Rule-Bot · 直连规则助手*",
-                "查询域名状态，检查并提交",
-                "`DOMAIN-SUFFIX` 直连规则。",
+                "🧭 *直连规则查询与提交助手*",
                 "",
-                "同时核对规则库、GEOSITE:CN、IP 与 NS。",
-                "提交前预览，确认后公开写入 GitHub。",
+                "📚 查询公开规则库与 `GEOSITE:CN` 收录状态",
+                "🌐 检查域名、可注册域名 IP 及 NS 服务器归属",
+                "🧾 提交前展示最终规则、判断依据与公开范围",
+                "🌍 明确确认后，规则才会写入公开 GitHub",
                 "",
-                "*请选择操作*",
+                "📂 *公开仓库*",
+                f"[{repo_label}](https://github.com/{repo})",
+                "",
+                "👇 *请选择需要使用的功能*",
             ]
         )
 
@@ -914,10 +930,10 @@ class HandlerManager:
     def _build_delete_unavailable_text(self) -> str:
         """Build the visible placeholder for the planned rule-deletion workflow."""
         return (
-            "➖ *删除规则*\n\n"
-            "此入口为后续版本预留，\n"
-            "当前暂未开放。\n\n"
-            "点击这里不会删除或修改任何规则。"
+            "➖ *删除规则（暂未开放）*\n\n"
+            "🧩 此入口为后续版本的规则删除流程预留。\n"
+            "当前暂未开放实际删除功能。\n\n"
+            "🛡️ 进入本页面不会删除或修改任何规则。"
         )
 
     def _build_help_text(self) -> str:
@@ -925,37 +941,39 @@ class HandlerManager:
         lines = [
             "ℹ️ *使用帮助*",
             "",
-            "*私聊命令*",
-            "`/query` 查询域名状态",
-            "`/add` 检查并提交直连规则",
-            "`/id` 查看 Telegram 用户 ID",
-            "`/skip` 跳过可选说明并提交",
-            "`/help` 打开本页",
+            "💬 *私聊命令*",
+            "🔍 `/query` 查询域名状态",
+            "➕ `/add` 检查并提交直连规则",
+            "🪪 `/id` 查看 Telegram 用户 ID",
+            "⏭️ `/skip` 跳过可选说明并提交",
+            "ℹ️ `/help` 打开本页",
         ]
         if getattr(self.config, "ALLOWED_GROUP_IDS", None):
             lines.extend(
                 [
                     "",
-                    "*群聊*",
+                    "👥 *群聊使用*",
                     "在已授权群组中 @机器人并附带域名。",
                     "检查通过后会直接公开提交，不再确认。",
                 ]
             )
         else:
-            lines.extend(["", "*群聊*", "仅在管理员授权的群组中生效。"])
+            lines.extend(
+                ["", "👥 *群聊使用*", "仅在管理员授权的群组中生效。"]
+            )
         if getattr(self.config, "MATCHSCOPE_PUBLIC_API_ENABLED", False):
             lines.extend(
                 [
                     "",
-                    "*MatchScope*",
+                    "🔗 *MatchScope 社区接入*",
                     "从首页申请或管理个人 Token。",
                 ]
             )
         lines.extend(
             [
                 "",
-                "*删除规则*",
-                "入口已保留，当前暂未开放。",
+                "➖ *删除规则*",
+                "入口已为后续版本保留，当前暂未开放。",
             ]
         )
         return "\n".join(lines)
@@ -976,21 +994,25 @@ class HandlerManager:
                 else "暂时无法获取"
             )
             lines = [
-                "*当前数据*",
-                f"直连 {direct_text} · GEOSITE:CN {geosite_count:,}",
+                "📊 *当前数据*",
+                f"📚 公开直连规则：{direct_text}",
+                f"🇨🇳 GEOSITE:CN：{geosite_count:,}",
             ]
 
             if include_limit and user_id is not None:
                 can_add, remaining = self.check_user_add_limit(user_id)
                 if can_add:
-                    lines.append(f"本小时还可添加 {remaining} 个域名")
+                    lines.append(f"⏱️ 本小时还可添加：{remaining} 个域名")
                 else:
-                    lines.append("本小时已达到添加上限，请稍后再试")
+                    lines.append("⏱️ 本小时已达到添加上限，请稍后再试")
 
             return "\n".join(lines)
         except Exception as e:
             logger.error(f"获取统计信息失败: {e}")
-            return "*当前数据*\n直连统计暂时无法获取，不影响继续输入"
+            return (
+                "📊 *当前数据*\n"
+                "⚠️ 直连规则统计暂时无法获取，不影响继续输入"
+            )
 
     def _format_detail_lines(
         self, details: list, limit: Optional[int] = None
@@ -1040,12 +1062,12 @@ class HandlerManager:
             "",
             f"`{visible_domain}`",
             "",
-            "*状态摘要*",
-            f"GitHub：{github_status}",
-            f"GEOSITE:CN：{'已存在' if in_geosite else '未找到'}",
+            "📋 *状态摘要*",
+            f"📚 GitHub 规则库：{github_status}",
+            f"🇨🇳 GEOSITE:CN：{'已存在' if in_geosite else '未找到'}",
         ]
         if check_failed:
-            lines.append("网络检查：暂时无法完成")
+            lines.append("🌐 网络检查：暂时无法完成")
             return "\n".join(lines)
 
         signals = []
@@ -1067,16 +1089,16 @@ class HandlerManager:
             and normalized_domain == registered_domain
         ):
             resolution_status = (
-                f"解析记录：输入 {input_ip_count} · 主域名同输入"
+                f"🌐 DNS 解析：输入 {input_ip_count} · 主域名同输入"
             )
         else:
             resolution_status = (
-                f"解析记录：输入 {input_ip_count} · "
+                f"🌐 DNS 解析：输入 {input_ip_count} · "
                 f"可注册域名 {registered_ip_count}"
             )
         lines.extend(
             [
-                f"大陆信号：{'、'.join(signals) if signals else '未检测到'}",
+                f"📡 中国大陆信号：{'、'.join(signals) if signals else '未检测到'}",
                 resolution_status,
             ]
         )
@@ -1088,7 +1110,7 @@ class HandlerManager:
             and not in_geosite
         ):
             visible = self._truncate_display(recommendation, 48)
-            lines.append(f"判断：{self.escape_markdown(visible)}")
+            lines.append(f"💡 综合判断：{self.escape_markdown(visible)}")
         return "\n".join(lines)
 
     def _build_query_detail_text(
@@ -1103,28 +1125,30 @@ class HandlerManager:
         github_unavailable = bool(github_result.get("error"))
         matches = github_result.get("matches", [])
         if github_unavailable:
-            lines.extend(["", "*规则命中*", "GitHub 规则暂时无法读取"])
+            lines.extend(["", "📚 *规则命中*", "GitHub 规则暂时无法读取"])
         elif matches:
             lines.extend(
-                ["", "*规则命中*", self._format_rule_matches(matches)]
+                ["", "📚 *规则命中*", self._format_rule_matches(matches)]
             )
 
         if "error" in check_result:
-            lines.extend(["", "*网络检查*", "暂时无法完成，请稍后重试。"])
+            lines.extend(
+                ["", "🌐 *网络检查*", "暂时无法完成，请稍后重试。"]
+            )
         else:
             domain_ips = self._format_value_list(check_result.get("domain_ips", []))
             registered_ips = self._format_value_list(
                 check_result.get("second_level_ips", [])
             )
             if domain_ips or registered_ips:
-                lines.extend(["", "*解析结果*"])
+                lines.extend(["", "🌐 *解析结果*"])
                 if domain_ips:
-                    lines.extend(["输入域名 IP", domain_ips])
+                    lines.extend(["🔹 输入域名 IP", domain_ips])
                 if registered_ips:
-                    lines.extend(["可注册域名 IP", registered_ips])
+                    lines.extend(["🔸 可注册域名 IP", registered_ips])
             detail_lines = self._format_detail_lines(check_result.get("details", []))
             if detail_lines:
-                lines.extend(["", "*归属检查*", detail_lines])
+                lines.extend(["", "📡 *归属检查*", detail_lines])
 
         if len(lines) == 3:
             lines.extend(["", "暂无更多技术详情。"])
@@ -1167,15 +1191,17 @@ class HandlerManager:
     def _build_query_prompt(self, stats_text: str) -> str:
         """构建查询提示文案"""
         return (
-            "🔍 *查询域名*\n\n"
-            "发送一个域名或 URL，我会检查：\n"
-            "• 已有规则\n"
-            "• GEOSITE:CN\n"
-            "• IP 与 NS 归属\n\n"
-            "*示例*\n"
+            "🔍 *查询域名状态*\n\n"
+            "请发送一个域名或 URL。系统将依次核对：\n"
+            "📚 公开直连规则\n"
+            "🇨🇳 `GEOSITE:CN` 收录状态\n"
+            "🌐 域名及可注册域名 IP\n"
+            "📡 NS 服务器归属\n\n"
+            "🧪 *输入示例*\n"
             "`example.com`\n"
             "`https://example.com/path`\n\n"
-            "如继续添加，会先确认可注册域名（主域名）。\n\n"
+            "🧾 如需继续添加，系统会先确认最终使用的\n"
+            "可注册域名（主域名），并展示拟提交规则。\n\n"
             f"{stats_text.strip()}"
         )
 
@@ -1183,13 +1209,15 @@ class HandlerManager:
         """构建添加提示文案"""
         return (
             "➕ *添加直连规则*\n\n"
-            "发送一个域名或 URL。\n"
-            "系统会提取可注册域名（主域名）并检查。\n\n"
-            "*示例*\n"
+            "请发送一个域名或 URL。系统将提取并核对\n"
+            "可注册域名（主域名），同时检查规则库、\n"
+            "`GEOSITE:CN`、IP 与 NS 服务器归属。\n\n"
+            "🧪 *输入示例*\n"
             "`example.com`\n"
             "`https://example.com/path`\n\n"
-            "提交前会预览最终规则与公开范围；\n"
-            "确认后才会写入 GitHub。\n\n"
+            "🧾 *提交说明*\n"
+            "系统会先展示最终规则、判断依据与公开范围；\n"
+            "只有明确确认后，才会写入公开 GitHub 仓库。\n\n"
             f"{stats_text.strip()}"
         )
     
@@ -1310,8 +1338,9 @@ class HandlerManager:
             identity_label = "用户名" if user.username else "显示名"
             text = (
                 "🆔 *Telegram 用户 ID*\n\n"
+                "🔢 *账号标识*\n"
                 f"`{user.id}`\n\n"
-                f"{identity_label}：{self._format_telegram_identity(user)}"
+                f"👤 {identity_label}：{self._format_telegram_identity(user)}"
             )
             await update.message.reply_text(
                 text,
@@ -1374,7 +1403,7 @@ class HandlerManager:
         self._reset_user_flow(user_id)
         await update.message.reply_text(
             "⚠️ *无法识别命令*\n\n"
-            "请使用下方菜单，或发送 `/help` 查看帮助。",
+            "🧭 请使用下方功能菜单，或发送 `/help` 查看完整帮助。",
             reply_markup=self._build_main_menu_keyboard(),
             parse_mode="Markdown",
         )
@@ -1390,7 +1419,7 @@ class HandlerManager:
             if user_state.get("state") != "waiting_description":
                 await update.message.reply_text(
                     "ℹ️ *当前没有可跳过的说明*\n\n"
-                    "请先开始添加直连规则。",
+                    "🧾 请先开始添加直连规则，并完成提交前检查。",
                     reply_markup=self._recovery_keyboard(
                         "add_direct_rule", "➕ 开始添加"
                     ),
@@ -1403,7 +1432,7 @@ class HandlerManager:
             logger.error(f"处理 skip 命令失败: {e}")
             await update.message.reply_text(
                 "❌ *暂时无法提交*\n\n"
-                "本次没有修改任何规则。",
+                "🛡️ 本次操作未修改任何规则。",
                 reply_markup=self._recovery_keyboard(
                     "add_direct_rule", "➕ 重新开始"
                 ),
@@ -1531,8 +1560,8 @@ class HandlerManager:
             else:
                 await query.edit_message_text(
                     "⌛ *操作已过期*\n\n"
-                    "尚未提交或修改任何规则。\n"
-                    "请重新开始。",
+                    "🛡️ 本次操作尚未提交或修改任何规则。\n"
+                    "请从下方入口重新开始。",
                     reply_markup=self._recovery_keyboard(),
                     parse_mode="Markdown",
                 )
@@ -1541,8 +1570,8 @@ class HandlerManager:
             logger.error(f"处理回调失败: {e}")
             await query.edit_message_text(
                 "❌ *操作失败*\n\n"
-                "页面可能未完整更新。\n"
-                "若刚才涉及提交，请先查询规则再重试。",
+                "⚠️ 页面可能未完整更新。\n"
+                "🔎 若刚才涉及提交，请先查询规则再重试。",
                 reply_markup=self._recovery_keyboard(),
                 parse_mode="Markdown",
             )
@@ -1615,35 +1644,39 @@ class HandlerManager:
         lines = [
             "🔗 *MatchScope 社区接入*",
             "",
-            "每位群成员可申请独立 Token。",
-            "凭据只显示一次，请妥善保存。",
+            "已验证的群组成员可申请独立 Token，",
+            "用于从 MatchScope 客户端提交待判断域名。",
             "",
-            "*当前状态*",
+            "🔐 *凭据说明*",
+            "Token 仅在签发时显示一次，请妥善保存。",
+            "重新签发或吊销后，旧 Token 将立即失效。",
+            "",
+            "📌 *当前状态*",
             status_text,
         ]
         if expires:
-            lines.append(f"有效期至：`{expires}`")
+            lines.append(f"⏳ 有效期至：`{expires}`")
         return "\n".join(lines)
 
     @staticmethod
     def _build_matchscope_privacy_text(consented: bool) -> str:
         return (
             "🛡️ *MatchScope 隐私说明*\n\n"
-            "*官方 MatchScope 客户端*\n"
+            "📱 *官方 MatchScope 客户端*\n"
             "默认只上报用于规则判断的可注册域名。\n"
             "本地会先去重，并排除 `.cn` 与排除项。\n\n"
-            "*默认不会主动上报*\n"
+            "🚫 *默认不会主动上报*\n"
             "URL 路径、查询参数、网页内容或访问次数。\n\n"
-            "*账号关联*\n"
+            "👤 *账号关联*\n"
             "Token 与账号关联，用于成员校验、限流、\n"
             "续签和吊销。Telegram 身份不会写入规则。\n\n"
-            "*公开范围*\n"
+            "🌍 *公开范围*\n"
             "成功添加的域名会公开出现在 GitHub；\n"
             "被拒绝的域名不会公开。\n\n"
-            "*网络与客户端*\n"
+            "🌐 *网络与客户端*\n"
             "若入口经过 CDN 或代理，可能处理 IP、时间\n"
             "和请求元数据。第三方客户端行为需自行确认。\n\n"
-            f"当前状态：*{'已同意' if consented else '尚未同意'}*"
+            f"📌 当前状态：*{'已同意' if consented else '尚未同意'}*"
         )
 
     async def _show_matchscope_access(self, query, user_id: int):
@@ -1770,8 +1803,8 @@ class HandlerManager:
         )
         await query.edit_message_text(
             "⚠️ *撤回隐私同意？*\n\n"
-            "当前 Token 将同时吊销。\n"
-            "客户端将无法继续提交。",
+            "🚫 当前 Token 将同时吊销，使用该凭据的客户端\n"
+            "将无法继续提交域名。此操作不会删除既有公开规则。",
             reply_markup=InlineKeyboardMarkup(
                 [
                     [
@@ -1806,7 +1839,8 @@ class HandlerManager:
         await self.matchscope_token_service.withdraw_consent(user_id)
         await query.edit_message_text(
             "🚫 *隐私同意已撤回*\n\n"
-            "当前 MatchScope Token 已同时吊销。",
+            "🔐 当前 MatchScope Token 已同时吊销。\n"
+            "既有公开规则未被删除或修改。",
             reply_markup=self._recovery_keyboard(
                 "matchscope_access", "↩️ 返回接入页"
             ),
@@ -1826,8 +1860,8 @@ class HandlerManager:
             )
             await query.edit_message_text(
                 "⚠️ *重新签发 Token？*\n\n"
-                "继续后，旧 Token 会立即失效。\n"
-                "使用旧 Token 的客户端将停止提交。",
+                "🔄 继续后将生成新的独立凭据，旧 Token 会立即失效。\n"
+                "使用旧 Token 的客户端将无法继续提交域名。",
                 reply_markup=InlineKeyboardMarkup(
                     [
                         [
@@ -1913,11 +1947,11 @@ class HandlerManager:
         )
         await query.message.reply_text(
             "🔐 *MatchScope 凭据已签发*\n\n"
-            "此凭据只显示一次，请勿转发。\n\n"
-            f"*接口入口*\n`{endpoint}`\n\n"
-            f"*Token*\n`{token}`\n\n"
-            f"有效期至：`{expires}`\n\n"
-            "保存后可删除本消息。\n"
+            "⚠️ 此凭据只显示一次，请勿转发或公开。\n\n"
+            f"🌐 *接口入口*\n`{endpoint}`\n\n"
+            f"🔑 *个人 Token*\n`{token}`\n\n"
+            f"⏳ *有效期至*\n`{expires}`\n\n"
+            "🗑️ 妥善保存后可删除本消息；\n"
             "删除消息不会吊销 Token。",
             reply_markup=keyboard,
             parse_mode="Markdown",
@@ -1941,8 +1975,8 @@ class HandlerManager:
         )
         await query.edit_message_text(
             "⚠️ *吊销当前 Token？*\n\n"
-            "吊销后，使用该 Token 的客户端\n"
-            "将立即停止提交。",
+            "🚫 吊销后，使用该 Token 的客户端将立即停止提交。\n"
+            "此操作不会删除或修改已经公开的规则。",
             reply_markup=InlineKeyboardMarkup(
                 [
                     [
@@ -1973,7 +2007,9 @@ class HandlerManager:
             return
         revoked = await self.matchscope_token_service.revoke(user_id)
         text = (
-            "🚫 *Token 已吊销*\n\n客户端已无法继续提交。"
+            "🚫 *Token 已吊销*\n\n"
+            "🔐 使用原 Token 的客户端已无法继续提交。\n"
+            "既有公开规则未被删除或修改。"
             if revoked
             else "ℹ️ *当前没有可吊销的 Token*"
         )
@@ -2014,8 +2050,8 @@ class HandlerManager:
         self._reset_user_flow(user_id)
         await query.edit_message_text(
             "➕ *添加代理规则*\n\n"
-            "该功能当前暂未开放。\n\n"
-            "点击这里不会添加或修改任何规则。",
+            "🧩 此入口为后续版本预留，当前暂未开放。\n\n"
+            "🛡️ 进入本页面不会添加或修改任何规则。",
             reply_markup=self._home_keyboard(),
             parse_mode='Markdown'
         )
@@ -2047,7 +2083,9 @@ class HandlerManager:
             domain = normalize_domain(domain_input)
             if not domain:
                 await processing_msg.edit_text(
-                    "⚠️ *无法识别域名*\n\n请检查输入后重新发送。",
+                    "⚠️ *无法识别域名*\n\n"
+                    "📝 请发送有效域名或包含域名的 URL，\n"
+                    "并检查输入中是否存在多余字符。",
                     reply_markup=self._recovery_keyboard(
                         "query_domain", "🔍 重新输入"
                     ),
@@ -2058,8 +2096,10 @@ class HandlerManager:
             if is_cn_domain(domain):
                 result_text = (
                     "ℹ️ *.cn 域名已默认直连*\n\n"
+                    "🧾 *已检查域名*\n"
                     f"`{domain}`\n\n"
-                    "无需手动添加。"
+                    "🇨🇳 `.cn` 域名已由现有策略默认直连，\n"
+                    "无需再次写入公开规则库。"
                 )
                 keyboard = [
                     [InlineKeyboardButton("🔍 查询其他域名", callback_data="query_domain")],
@@ -2172,7 +2212,8 @@ class HandlerManager:
         )
         if not page:
             await query.edit_message_text(
-                "⌛ *查询详情已过期*\n\n请重新查询域名。",
+                "⌛ *查询详情已过期*\n\n"
+                "🔍 缓存的检查结果已失效，请重新查询域名。",
                 reply_markup=self._recovery_keyboard(
                     "query_domain", "🔍 重新查询"
                 ),
@@ -2213,8 +2254,8 @@ class HandlerManager:
                 
                 await processing_msg.edit_text(
                     "⚠️ *本小时添加次数已用完*\n\n"
-                    f"每小时最多添加 {self.MAX_ADDS_PER_HOUR} 个域名。\n"
-                    "请在下一小时再试。",
+                    f"⏱️ 每个账号每小时最多添加 {self.MAX_ADDS_PER_HOUR} 个域名。\n"
+                    "当前操作未修改规则，请在下一小时再试。",
                     reply_markup=reply_markup,
                     parse_mode='Markdown'
                 )
@@ -2234,8 +2275,10 @@ class HandlerManager:
                 
                 await processing_msg.edit_text(
                     "ℹ️ *.cn 域名已默认直连*\n\n"
+                    "🧾 *已检查域名*\n"
                     f"`{normalized_input}`\n\n"
-                    "无需手动添加。",
+                    "🇨🇳 `.cn` 域名已由现有策略默认直连，\n"
+                    "无需再次写入公开规则库。",
                     reply_markup=reply_markup,
                     parse_mode='Markdown'
                 )
@@ -2256,14 +2299,18 @@ class HandlerManager:
                     
                     await processing_msg.edit_text(
                         "ℹ️ *.cn 域名已默认直连*\n\n"
+                        "🧾 *已检查域名*\n"
                         f"`{normalized_input}`\n\n"
-                        "无需手动添加。",
+                        "🇨🇳 `.cn` 域名已由现有策略默认直连，\n"
+                        "无需再次写入公开规则库。",
                         reply_markup=reply_markup,
                         parse_mode='Markdown'
                     )
                 else:
                     await processing_msg.edit_text(
-                        "⚠️ *无法识别域名*\n\n请检查输入后重新发送。",
+                        "⚠️ *无法识别域名*\n\n"
+                        "📝 请发送有效域名或包含域名的 URL，\n"
+                        "并检查输入中是否存在多余字符。",
                         reply_markup=self._recovery_keyboard(
                             "add_direct_rule", "➕ 重新输入"
                         ),
@@ -2277,8 +2324,9 @@ class HandlerManager:
             if domain != normalize_domain(domain_input):
                 await processing_msg.edit_text(
                     "🔍 *已提取可注册域名*\n\n"
+                    "🧾 *后续检查对象*\n"
                     f"`{domain}`\n\n"
-                    "正在继续检查…",
+                    "系统正在继续核对规则库与网络归属信息…",
                     parse_mode="Markdown",
                 )
             
@@ -2290,7 +2338,7 @@ class HandlerManager:
             if github_result.get("error"):
                 await processing_msg.edit_text(
                     "❌ *暂时无法读取 GitHub 规则*\n\n"
-                    "本次没有提交任何规则。\n"
+                    "🛡️ 本次操作未提交或修改任何规则。\n"
                     "请稍后重试。",
                     reply_markup=self._recovery_keyboard(
                         "add_direct_rule", "➕ 重新检查"
@@ -2302,8 +2350,9 @@ class HandlerManager:
             
             if github_result.get("exists"):
                 result_text = "ℹ️ *规则已存在，无需添加*\n\n"
+                result_text += "🧾 *已检查域名*\n"
                 result_text += f"`{domain}`\n\n"
-                result_text += "*匹配规则*\n"
+                result_text += "📚 *匹配规则*\n"
                 result_text += self._format_rule_matches(github_result.get("matches", []))
                 
                 keyboard = [
@@ -2322,7 +2371,7 @@ class HandlerManager:
                 if second_level_result.get("error"):
                     await processing_msg.edit_text(
                         "❌ *暂时无法读取 GitHub 规则*\n\n"
-                        "本次没有提交任何规则。\n"
+                        "🛡️ 本次操作未提交或修改任何规则。\n"
                         "请稍后重试。",
                         reply_markup=self._recovery_keyboard(
                             "add_direct_rule", "➕ 重新检查"
@@ -2332,9 +2381,9 @@ class HandlerManager:
                     return
                 if second_level_result.get("exists"):
                     result_text = "ℹ️ *可注册域名已在规则中*\n\n"
-                    result_text += f"输入：`{domain}`\n"
-                    result_text += f"可注册域名：`{second_level}`\n\n"
-                    result_text += "*匹配规则*\n"
+                    result_text += f"🔎 输入域名：`{domain}`\n"
+                    result_text += f"🧾 可注册域名：`{second_level}`\n\n"
+                    result_text += "📚 *匹配规则*\n"
                     result_text += self._format_rule_matches(
                         second_level_result.get("matches", [])
                     )
@@ -2353,8 +2402,9 @@ class HandlerManager:
             in_geosite = await self.data_manager.is_domain_in_geosite(domain)
             if in_geosite:
                 result_text = "ℹ️ *GEOSITE:CN 已覆盖*\n\n"
+                result_text += "🧾 *已检查域名*\n"
                 result_text += f"`{domain}`\n\n"
-                result_text += "无需重复添加。"
+                result_text += "🇨🇳 现有分类已覆盖，无需重复添加。"
                 
                 keyboard = [
                     [InlineKeyboardButton("➕ 添加其他域名", callback_data="add_direct_rule")],
@@ -2373,7 +2423,7 @@ class HandlerManager:
             if "error" in check_result:
                 await processing_msg.edit_text(
                     "❌ *域名检查失败*\n\n"
-                    "本次没有提交任何规则。\n"
+                    "🛡️ 本次操作未提交或修改任何规则。\n"
                     "请稍后重试。",
                     reply_markup=self._recovery_keyboard(
                         "add_direct_rule", "➕ 重新检查"
@@ -2410,7 +2460,10 @@ class HandlerManager:
             elif should_reject:
                 # 不符合条件，拒绝添加
                 if self.is_admin(user_id):
-                    result_text += "\n\n*管理员操作*\n可跳过判断并强制添加。"
+                    result_text += (
+                        "\n\n🛡️ *管理员操作*\n"
+                        "可跳过系统判断并强制公开添加。"
+                    )
                     keyboard.append([
                         InlineKeyboardButton(
                             "🛡️ 管理员权限添加",
@@ -2442,7 +2495,7 @@ class HandlerManager:
             logger.error(f"添加域名输入处理失败: {e}")
             text = (
                 "❌ *暂时无法完成检查*\n\n"
-                "本次没有提交任何规则。\n"
+                "🛡️ 本次操作未提交或修改任何规则。\n"
                 "请稍后重试。"
             )
             markup = self._recovery_keyboard("add_direct_rule", "➕ 重新检查")
@@ -2463,8 +2516,8 @@ class HandlerManager:
             if not action:
                 await query.edit_message_text(
                     "⌛ *操作已过期*\n\n"
-                    "尚未提交或修改任何规则。\n"
-                    "请重新开始。",
+                    "🛡️ 本次操作尚未提交或修改任何规则。\n"
+                    "请从下方入口重新开始。",
                     reply_markup=self._recovery_keyboard(
                         "query_domain", "🔍 重新查询"
                     ),
@@ -2480,7 +2533,7 @@ class HandlerManager:
             if "error" in check_result:
                 await query.edit_message_text(
                     "❌ *域名检查失败*\n\n"
-                    "本次没有提交任何规则。\n"
+                    "🛡️ 本次操作未提交或修改任何规则。\n"
                     "请稍后重试。",
                     reply_markup=self._recovery_keyboard(
                         "query_domain", "🔍 重新查询"
@@ -2515,7 +2568,10 @@ class HandlerManager:
                 keyboard.append([InlineKeyboardButton("↩️ 取消", callback_data=f"confirm_add|no|{confirm_token}")])
             else:
                 if self.is_admin(user_id):
-                    result_text += "\n\n*管理员操作*\n可跳过判断并强制添加。"
+                    result_text += (
+                        "\n\n🛡️ *管理员操作*\n"
+                        "可跳过系统判断并强制公开添加。"
+                    )
                     keyboard.append([
                         InlineKeyboardButton(
                             "🛡️ 管理员权限添加",
@@ -2540,7 +2596,7 @@ class HandlerManager:
             logger.error(f"处理添加域名回调失败: {e}")
             await query.edit_message_text(
                 "❌ *暂时无法完成检查*\n\n"
-                "本次没有提交任何规则。",
+                "🛡️ 本次操作未提交或修改任何规则。",
                 reply_markup=self._recovery_keyboard(
                     "query_domain", "🔍 重新查询"
                 ),
@@ -2637,8 +2693,8 @@ class HandlerManager:
                 await query.edit_message_text(
                     group_next(
                         "⌛ *操作已过期*\n\n"
-                        "尚未提交或修改任何规则。\n"
-                        "请重新开始。"
+                        "🛡️ 本次操作尚未提交或修改任何规则。\n"
+                        "请从下方入口重新开始。"
                     ),
                     reply_markup=page_markup(
                         self._recovery_keyboard(
@@ -2655,7 +2711,8 @@ class HandlerManager:
                 await query.edit_message_text(
                     group_next(
                         "⚠️ *域名格式无效*\n\n"
-                        "尚未提交或修改任何规则。"
+                        "📝 未能提取有效的可注册域名。\n"
+                        "🛡️ 本次操作尚未提交或修改任何规则。"
                     ),
                     reply_markup=page_markup(
                         self._recovery_keyboard(
@@ -2671,7 +2728,7 @@ class HandlerManager:
                     query,
                     group_next(
                         "↩️ *已取消管理员权限添加*\n\n"
-                        "本次没有提交或修改任何规则。"
+                        "🛡️ 本次操作未提交或修改任何规则。"
                     ),
                     page_markup(self._recovery_keyboard()),
                 )
@@ -2707,9 +2764,10 @@ class HandlerManager:
                 )
                 await query.edit_message_text(
                     "🛡️ *确认管理员权限添加*\n\n"
+                    "🧾 *拟提交规则*\n"
                     f"`DOMAIN-SUFFIX,{domain}`\n\n"
-                    "这会跳过系统判断并立即公开写入 GitHub。\n"
-                    "当前删除功能尚未开放，请确认规则无误。",
+                    "⚠️ 此操作将跳过系统判断，并立即公开写入 GitHub。\n\n"
+                    "➖ 当前删除功能尚未开放，请确认规则准确无误。",
                     reply_markup=confirmation_markup,
                     parse_mode="Markdown",
                 )
@@ -2719,8 +2777,10 @@ class HandlerManager:
                 await query.edit_message_text(
                     group_next(
                         "ℹ️ *.cn 域名已默认直连*\n\n"
+                        "🧾 *已检查域名*\n"
                         f"`{domain}`\n\n"
-                        "无需手动添加。"
+                        "🇨🇳 `.cn` 域名已由现有策略默认直连，\n"
+                        "无需再次写入公开规则库。"
                     ),
                     reply_markup=page_markup(
                         self._recovery_keyboard(
@@ -2741,8 +2801,8 @@ class HandlerManager:
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.edit_message_text(
                     "⚠️ *本小时添加次数已用完*\n\n"
-                    f"每小时最多添加 {self.MAX_ADDS_PER_HOUR} 个域名。\n"
-                    "请在下一小时再试。",
+                    f"⏱️ 每个账号每小时最多添加 {self.MAX_ADDS_PER_HOUR} 个域名。\n"
+                    "当前操作未修改规则，请在下一小时再试。",
                     reply_markup=page_markup(reply_markup),
                     parse_mode='Markdown'
                 )
@@ -2754,7 +2814,7 @@ class HandlerManager:
                 await query.edit_message_text(
                     group_next(
                         "❌ *暂时无法读取 GitHub 规则*\n\n"
-                        "本次没有提交任何规则。\n"
+                        "🛡️ 本次操作未提交或修改任何规则。\n"
                         "请稍后重试。",
                         retry=True,
                     ),
@@ -2768,8 +2828,9 @@ class HandlerManager:
                 return
             if github_result.get("exists"):
                 result_text = "ℹ️ *规则已存在，无需添加*\n\n"
+                result_text += "🧾 *已检查域名*\n"
                 result_text += f"`{domain}`\n\n"
-                result_text += "*匹配规则*\n"
+                result_text += "📚 *匹配规则*\n"
                 result_text += self._format_rule_matches(
                     github_result.get("matches", [])
                 )
@@ -2789,8 +2850,9 @@ class HandlerManager:
             in_geosite = await self.data_manager.is_domain_in_geosite(domain)
             if in_geosite:
                 result_text = "ℹ️ *GEOSITE:CN 已覆盖*\n\n"
+                result_text += "🧾 *已检查域名*\n"
                 result_text += f"`{domain}`\n\n"
-                result_text += "无需重复添加。"
+                result_text += "🇨🇳 现有分类已覆盖，无需重复添加。"
 
                 keyboard = [
                     [InlineKeyboardButton("➕ 添加其他域名", callback_data="add_direct_rule")],
@@ -2810,7 +2872,7 @@ class HandlerManager:
                 await query.edit_message_text(
                     group_next(
                         "❌ *域名检查失败*\n\n"
-                        "本次没有提交任何规则。\n"
+                        "🛡️ 本次操作未提交或修改任何规则。\n"
                         "请稍后重试。",
                         retry=True,
                     ),
@@ -2883,7 +2945,10 @@ class HandlerManager:
                 text = (
                     self._build_submission_uncertain_text(target_domain)
                     if write_attempted
-                    else "❌ *强制添加失败*\n\n本次没有修改任何规则。"
+                    else (
+                        "❌ *管理员权限添加失败*\n\n"
+                        "🛡️ 本次操作未修改任何规则。"
+                    )
                 )
                 recovery_markup = self._recovery_keyboard(
                     "query_domain" if write_attempted else "add_direct_rule",
@@ -2919,8 +2984,8 @@ class HandlerManager:
             if not domain_data:
                 await query.edit_message_text(
                     "⌛ *确认已过期*\n\n"
-                    "尚未提交或修改任何规则。\n"
-                    "请重新开始。",
+                    "🛡️ 本次操作尚未提交或修改任何规则。\n"
+                    "请从下方入口重新开始。",
                     reply_markup=self._recovery_keyboard(
                         "add_direct_rule", "➕ 重新检查"
                     ),
@@ -2938,7 +3003,7 @@ class HandlerManager:
                 
                 await query.edit_message_text(
                     "ℹ️ *已取消添加*\n\n"
-                    "尚未提交或修改任何规则。",
+                    "🛡️ 本次操作尚未提交或修改任何规则。",
                     reply_markup=reply_markup,
                     parse_mode='Markdown'
                 )
@@ -2948,7 +3013,7 @@ class HandlerManager:
             if decision != "yes":
                 await query.edit_message_text(
                     "⚠️ *确认操作无效*\n\n"
-                    "尚未提交或修改任何规则。",
+                    "🛡️ 本次操作尚未提交或修改任何规则。",
                     reply_markup=self._recovery_keyboard(
                         "add_direct_rule", "➕ 重新检查"
                     ),
@@ -2961,7 +3026,7 @@ class HandlerManager:
             if not domain:
                 await query.edit_message_text(
                     "⌛ *域名数据已失效*\n\n"
-                    "尚未提交或修改任何规则。",
+                    "🛡️ 本次操作尚未提交或修改任何规则。",
                     reply_markup=self._recovery_keyboard(
                         "add_direct_rule", "➕ 重新开始"
                     ),
@@ -3016,9 +3081,10 @@ class HandlerManager:
                 
                 await update.message.reply_text(
                     "⚠️ *说明不符合要求*\n\n"
+                    "✍️ *填写要求*\n"
                     f"最多 {self.MAX_DESCRIPTION_LENGTH} 个字符，且只能有一行。\n"
-                    f"当前输入：{len(description)} 个字符。\n\n"
-                    "请重新输入，或直接跳过说明。",
+                    f"📏 当前输入：{len(description)} 个字符。\n\n"
+                    "请重新输入符合要求的说明，或直接选择跳过。",
                     reply_markup=reply_markup,
                     parse_mode='Markdown'
                 )
@@ -3030,7 +3096,7 @@ class HandlerManager:
             logger.error(f"处理说明输入失败: {e}")
             await update.message.reply_text(
                 "❌ *暂时无法提交说明*\n\n"
-                "本次没有修改任何规则。",
+                "🛡️ 本次操作未修改任何规则。",
                 reply_markup=self._recovery_keyboard(
                     "add_direct_rule", "➕ 重新开始"
                 ),
@@ -3053,7 +3119,7 @@ class HandlerManager:
             if not domain or not check_result:
                 await query.edit_message_text(
                     "⌛ *操作数据已失效*\n\n"
-                    "尚未提交或修改任何规则。",
+                    "🛡️ 本次操作尚未提交或修改任何规则。",
                     reply_markup=self._recovery_keyboard(
                         "add_direct_rule", "➕ 重新开始"
                     ),
@@ -3143,7 +3209,7 @@ class HandlerManager:
                     if write_attempted
                     else (
                         "❌ *直连规则添加失败*\n\n"
-                        "本次没有修改任何规则。\n"
+                        "🛡️ 本次操作未修改任何规则。\n"
                         "请稍后重试。"
                     )
                 )
@@ -3176,7 +3242,7 @@ class HandlerManager:
             if not domain or not check_result:
                 await message.reply_text(
                     "⌛ *操作数据已失效*\n\n"
-                    "尚未提交或修改任何规则。",
+                    "🛡️ 本次操作尚未提交或修改任何规则。",
                     reply_markup=self._recovery_keyboard(
                         "add_direct_rule", "➕ 重新开始"
                     ),
@@ -3252,7 +3318,7 @@ class HandlerManager:
                     if write_attempted
                     else (
                         "❌ *直连规则添加失败*\n\n"
-                        "本次没有修改任何规则。\n"
+                        "🛡️ 本次操作未修改任何规则。\n"
                         "请稍后重试。"
                     )
                 )

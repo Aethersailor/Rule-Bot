@@ -17,6 +17,7 @@ def _button_labels(markup):
 
 
 def _display_width(text):
+    text = re.sub(r"\[([^\]]*)\]\([^)]+\)", r"\1", text)
     visible = re.sub(r"\\([_*`\[\]()~>#+\-=|{}.!])", r"\1", text)
     visible = visible.replace("*", "").replace("`", "")
     return sum(
@@ -67,11 +68,16 @@ class TestVisibleCopy(unittest.TestCase):
             for button in row
         }
 
-        _assert_compact_page(self, text, max_lines=12)
-        self.assertIn("Rule-Bot · 直连规则助手", text)
-        self.assertIn("提交前预览", text)
+        _assert_compact_page(self, text, max_lines=16)
+        self.assertIn("欢迎使用 Rule-Bot", text)
+        self.assertIn("🧭 *直连规则查询与提交助手*", text)
+        self.assertIn("判断依据与公开范围", text)
+        self.assertIn("🌍 明确确认后，规则才会写入公开 GitHub", text)
+        for label in ("📚", "🌐", "🧾", "🌍"):
+            self.assertIn(label, text)
+        self.assertIn("📂 *公开仓库*", text)
         self.assertNotIn("•", text)
-        self.assertNotIn(manager.config.GITHUB_REPO, text)
+        self.assertIn("Aethersailor/Custom", text)
         self.assertIn("➖ 删除规则（暂未开放）", labels)
         self.assertIn("🔗 MatchScope", labels)
         self.assertIn("ℹ️ 使用帮助", labels)
@@ -105,9 +111,10 @@ class TestVisibleCopy(unittest.TestCase):
 
         delete_text = manager._build_delete_unavailable_text()
 
-        self.assertIn("后续版本预留", delete_text)
+        self.assertIn("后续版本", delete_text)
         self.assertIn("当前暂未开放", delete_text)
-        self.assertIn("点击这里不会删除或修改任何规则", delete_text)
+        self.assertIn("不会删除或修改任何规则", delete_text)
+        self.assertIn("🛡️", delete_text)
         self.assertNotIn(manager.config.GITHUB_REPO, delete_text)
         self.assertNotIn(manager.config.DIRECT_RULE_FILE, delete_text)
         _assert_compact_page(self, delete_text, max_lines=7)
@@ -115,14 +122,19 @@ class TestVisibleCopy(unittest.TestCase):
     def test_prompts_use_accurate_registered_domain_term(self):
         manager = self._manager()
 
-        query = manager._build_query_prompt("*当前数据*\n可用")
-        add = manager._build_add_prompt("*当前数据*\n可用")
+        query = manager._build_query_prompt("📊 *当前数据*\n📚 可用")
+        add = manager._build_add_prompt("📊 *当前数据*\n📚 可用")
 
         self.assertIn("可注册域名（主域名）", query)
         self.assertIn("可注册域名（主域名）", add)
         self.assertNotIn("二级域名", query + add)
-        _assert_compact_page(self, query, max_lines=16)
-        _assert_compact_page(self, add, max_lines=15)
+        for label in ("📚", "🇨🇳", "🌐", "📡", "🧪", "📊"):
+            self.assertIn(label, query)
+        self.assertIn("🧾 *提交说明*", add)
+        self.assertIn("只有明确确认后", add)
+        self.assertNotIn("我会", query + add)
+        _assert_compact_page(self, query, max_lines=19)
+        _assert_compact_page(self, add, max_lines=19)
 
     def test_dynamic_details_are_bounded_for_narrow_screens(self):
         manager = self._manager()
@@ -149,14 +161,14 @@ class TestVisibleCopy(unittest.TestCase):
         )
         privacy = manager._build_matchscope_privacy_text(False)
 
-        _assert_compact_page(self, access, max_lines=9)
+        _assert_compact_page(self, access, max_lines=13)
         _assert_compact_page(self, privacy, max_lines=24, max_width=62)
         for heading in (
-            "官方 MatchScope 客户端",
-            "默认不会主动上报",
-            "账号关联",
-            "公开范围",
-            "网络与客户端",
+            "📱 *官方 MatchScope 客户端*",
+            "🚫 *默认不会主动上报*",
+            "👤 *账号关联*",
+            "🌍 *公开范围*",
+            "🌐 *网络与客户端*",
         ):
             self.assertIn(heading, privacy)
         self.assertNotIn("•", privacy)
@@ -168,11 +180,12 @@ class TestVisibleCopy(unittest.TestCase):
         description = manager._build_description_prompt_text("example.com", user)
         failure = manager._build_add_failure_text("example.com")
 
-        self.assertIn("不需要说明可直接跳过", description)
-        self.assertIn("公开提交者：@alice", description)
-        self.assertIn("本次没有修改任何规则", failure)
-        _assert_compact_page(self, description, max_lines=12)
-        _assert_compact_page(self, failure, max_lines=7)
+        self.assertIn("如不需要说明，可直接选择跳过", description)
+        self.assertIn("🌍 *公开信息*", description)
+        self.assertIn("提交者：@alice", description)
+        self.assertIn("本次操作未修改任何规则", failure)
+        _assert_compact_page(self, description, max_lines=15)
+        _assert_compact_page(self, failure, max_lines=8)
 
     def test_uncertain_submission_page_never_claims_no_write(self):
         manager = self._manager()
@@ -182,7 +195,8 @@ class TestVisibleCopy(unittest.TestCase):
         self.assertIn("提交结果暂时无法确认", text)
         self.assertIn("避免重复提交", text)
         self.assertNotIn("没有修改任何规则", text)
-        _assert_compact_page(self, text, max_lines=7)
+        self.assertIn("🧾 *待核对规则*", text)
+        _assert_compact_page(self, text, max_lines=8)
 
     def test_identity_does_not_fake_a_username(self):
         manager = self._manager()
@@ -228,12 +242,16 @@ class TestVisibleCopy(unittest.TestCase):
 
         self.assertEqual(target, "example.com")
         self.assertIn("DOMAIN-SUFFIX,example.com", text)
+        self.assertIn("🧾 *拟提交规则*", text)
+        self.assertIn("🔎 *原始输入*", text)
+        self.assertIn("💡 *判断依据*", text)
+        self.assertIn("🌍 *公开范围*", text)
         self.assertIn("公开 GitHub", text)
         self.assertIn("Alice", text)
         self.assertIn("群组公告", text)
         self.assertNotIn("结论：", text)
         self.assertNotIn("检查详情", text)
-        _assert_compact_page(self, text, max_lines=10)
+        _assert_compact_page(self, text, max_lines=16)
 
     def test_command_menu_omits_dead_end_commands(self):
         commands = RuleBot._build_bot_commands()
@@ -459,7 +477,7 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
         final = processing.edit_text.await_args_list[-1]
         summary = final.args[0]
         self.assertTrue(summary.startswith("ℹ️ *暂不建议添加*"))
-        self.assertIn("解析记录：输入 4 · 可注册域名 1", summary)
+        self.assertIn("🌐 DNS 解析：输入 4 · 可注册域名 1", summary)
         self.assertNotIn("2001:db8::1", summary)
         _assert_compact_page(self, summary, max_lines=11)
         self.assertEqual(
@@ -743,7 +761,7 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
         final = processing.edit_text.await_args_list[-1]
         self.assertTrue(final.args[0].startswith("✅ *可以提交直连规则*"))
         self.assertNotIn("检查详情", final.args[0])
-        _assert_compact_page(self, final.args[0], max_lines=10)
+        _assert_compact_page(self, final.args[0], max_lines=13)
         labels = _button_labels(final.kwargs["reply_markup"])
         self.assertEqual(labels, ["✅ 确认公开提交", "↩️ 取消", "🏠 返回首页"])
 
@@ -1288,7 +1306,7 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
 
         update.message.reply_text.assert_awaited_once()
         final = processing.edit_text.await_args
-        self.assertIn("本次没有提交任何规则", final.args[0])
+        self.assertIn("本次操作未提交或修改任何规则", final.args[0])
         self.assertIn("🏠 返回首页", _button_labels(final.kwargs["reply_markup"]))
 
     async def test_write_exception_reports_uncertain_result_before_retry(self):

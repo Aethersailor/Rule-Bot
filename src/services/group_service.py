@@ -101,9 +101,10 @@ class GroupService:
         group_name = self._escape_markdown(self.config.REQUIRED_GROUP_NAME)
         return (
             "🔒 *加入群组后继续*\n\n"
-            "当前账号尚未通过成员验证。\n\n"
-            f"群组：{group_name}\n\n"
-            "加入后点击“已加入，重新验证”。"
+            "👤 当前账号尚未通过群组成员验证。\n\n"
+            "👥 *所需群组*\n"
+            f"{group_name}\n\n"
+            "✅ 加入群组后，请点击“已加入，重新验证”。"
         )
 
     def get_join_group_keyboard(self) -> InlineKeyboardMarkup:
@@ -142,10 +143,11 @@ class GroupService:
         )[:8]
         safe_domain = self._escape_inline_code(domain)
         message = "📣 *直连规则已更新*\n\n"
+        message += "🧾 *已写入规则*\n"
         message += f"`DOMAIN-SUFFIX,{safe_domain}`"
         details = []
         if user_name:
-            details.append(f"提交者：{self._escape_markdown(user_name)}")
+            details.append(f"👤 提交者：{self._escape_markdown(user_name)}")
         if details:
             message += f"\n\n{'\n'.join(details)}"
 

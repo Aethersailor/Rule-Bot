@@ -20,10 +20,12 @@ class TestGroupHandlerText(unittest.TestCase):
         text = self.handler._build_missing_domain_text()
 
         self.assertIn("没有识别到域名", text)
-        self.assertIn("再次 @我", text)
+        self.assertIn("重新 @机器人", text)
         self.assertIn("`example.com`", text)
         self.assertNotIn("•", text)
-        self.assertLessEqual(len(text.splitlines()), 8)
+        self.assertIn("🧪 *输入示例*", text)
+        self.assertIn("💬", text)
+        self.assertLessEqual(len(text.splitlines()), 9)
 
     def test_cn_page_has_no_nested_bold_code(self):
         text = self.handler._build_cn_domain_text("example.cn")
@@ -66,8 +68,10 @@ class TestGroupHandlerResultPages(unittest.IsolatedAsyncioTestCase):
 
         initial_text = message.reply_text.await_args.args[0]
         self.assertIn("将自动写入公开 GitHub", initial_text)
+        self.assertIn("⚠️ 群聊流程不会再次要求确认", initial_text)
         result_call = processing.edit_text.await_args
         self.assertIn("直连规则已添加", result_call.args[0])
+        self.assertIn("🧾 *已写入规则*", result_call.args[0])
         self.assertNotIn("https://", result_call.args[0])
         button = result_call.kwargs["reply_markup"].inline_keyboard[0][0]
         self.assertIn("abcdef12", button.text)
@@ -114,7 +118,8 @@ class TestGroupHandlerResultPages(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(text.startswith("❌"))
         self.assertNotIn("bad\n", text)
         self.assertIn("请稍后再次 @机器人", text)
-        self.assertLess(len(text), 240)
+        self.assertIn("🛡️ 本次操作未修改任何规则", text)
+        self.assertLess(len(text), 320)
 
     async def test_uncertain_write_result_warns_before_any_retry(self):
         handler = self._handler_for_result(

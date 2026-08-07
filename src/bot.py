@@ -6,6 +6,7 @@ import asyncio
 from pathlib import Path
 from typing import Optional
 from loguru import logger
+from telegram import BotCommand
 
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, 
@@ -123,6 +124,10 @@ class RuleBot:
                 await self.handler_manager.start()  # 显式启动服务（如 DNS Session）
                 if self.matchscope_api:
                     await self.matchscope_api.start()
+                try:
+                    await self.app.bot.set_my_commands(self._build_bot_commands())
+                except Exception as e:
+                    logger.warning("Telegram 命令菜单更新失败，不影响机器人启动: {}", e)
                 await self.app.start()
                 self._metrics_task = EXPORTER.start()
                 await self.app.updater.start_polling(
@@ -150,6 +155,18 @@ class RuleBot:
         finally:
             await self.stop()
     
+    @staticmethod
+    def _build_bot_commands() -> list[BotCommand]:
+        """Commands exposed in Telegram's native menu; omit unavailable dead ends."""
+        return [
+            BotCommand("start", "打开主菜单"),
+            BotCommand("query", "查询域名状态"),
+            BotCommand("add", "添加直连规则"),
+            BotCommand("help", "查看使用说明"),
+            BotCommand("id", "查看 Telegram 用户 ID"),
+            BotCommand("skip", "填写说明时跳过并提交"),
+        ]
+
     def _register_handlers(self):
         """注册所有处理器"""
         # 命令处理器
@@ -159,8 +176,14 @@ class RuleBot:
         self.app.add_handler(CommandHandler("id", self.handler_manager.id_command, filters=private_only))
         self.app.add_handler(CommandHandler("query", self.handler_manager.query_command, filters=private_only))
         self.app.add_handler(CommandHandler("add", self.handler_manager.add_command, filters=private_only))
+        # Keep the legacy command routable for existing users, but do not
+        # advertise this unavailable feature in Telegram's command menu.
         self.app.add_handler(CommandHandler("delete", self.handler_manager.delete_command, filters=private_only))
         self.app.add_handler(CommandHandler("skip", self.handler_manager.skip_command, filters=private_only))
+        self.app.add_handler(MessageHandler(
+            private_only & filters.COMMAND,
+            self.handler_manager.unknown_command,
+        ))
         
         # 回调查询处理器
         self.app.add_handler(CallbackQueryHandler(self.handler_manager.handle_callback))

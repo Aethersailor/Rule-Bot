@@ -257,8 +257,8 @@ class TestMatchScopeSubmission(unittest.IsolatedAsyncioTestCase):
             for row in manager._build_main_menu_keyboard().inline_keyboard
             for button in row
         ]
-        self.assertNotIn("🔗 MatchScope 接入", disabled_labels)
-        self.assertIn("🔗 MatchScope 接入", enabled_labels)
+        self.assertNotIn("🔗 MatchScope", disabled_labels)
+        self.assertIn("🔗 MatchScope", enabled_labels)
 
     async def test_cn_and_invalid_domains_are_terminal_without_checks(self):
         manager = HandlerManager.__new__(HandlerManager)
@@ -283,6 +283,9 @@ class TestMatchScopeSubmission(unittest.IsolatedAsyncioTestCase):
 
     async def test_token_issue_requires_current_privacy_consent(self):
         manager = HandlerManager.__new__(HandlerManager)
+        manager.user_states = {}
+        manager._pending_actions = {}
+        manager.MAX_USER_STATES = 4096
         manager.matchscope_token_service = SimpleNamespace(
             has_current_consent=AsyncMock(return_value=False)
         )

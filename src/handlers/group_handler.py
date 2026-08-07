@@ -147,7 +147,9 @@ class GroupHandler:
             username = user.username or user.first_name or str(user.id)
             
             # 执行域名处理
-            await self._process_domain_request(message, domain, username, user.id)
+            await self._process_domain_request(
+                message, domain, username, user.id, user=user
+            )
             
         except Exception as e:
             logger.error(f"处理群组消息失败: {e}")
@@ -165,7 +167,7 @@ class GroupHandler:
             message: 消息对象
             
         Returns:
-            提取到的域名（二级域名格式），或 None
+            提取到的可注册域名（主域名），或 None
         """
         # 移除 @机器人 提及后提取域名
         text = message.text or ""
@@ -196,7 +198,9 @@ class GroupHandler:
         message: Message, 
         domain: str, 
         username: str,
-        user_id: int
+        user_id: int,
+        *,
+        user=None,
     ):
         """处理域名请求：查询 + 自动添加
         
@@ -207,8 +211,17 @@ class GroupHandler:
             user_id: 用户 ID（用于频率限制）
         """
         try:
-            # 发送处理中消息
-            processing_msg = await message.reply_text(f"🔍 正在检查域名 `{domain}`...", parse_mode='Markdown')
+            identity = (
+                self.handler_manager._format_telegram_identity(user)
+                if user is not None
+                else self.handler_manager.escape_markdown(username)
+            )
+            processing_msg = await message.reply_text(
+                f"🔍 正在检查 `{domain}`。\n\n"
+                "若符合条件，将自动写入公开 GitHub，且不会再次确认。\n"
+                f"👤 *公开提交者：* {identity}",
+                parse_mode='Markdown',
+            )
             
             # 检查用户添加频率限制
             can_add, remaining = self.handler_manager.check_user_add_limit(user_id)
@@ -232,13 +245,18 @@ class GroupHandler:
             reply_markup = None
             if result["action"] == "added":
                 remaining = result["rate_limit_remaining"]
-                escaped_username = self.handler_manager.escape_markdown(username)
-                
-                result_text = "✅ *域名添加成功！*\n\n"
-                result_text += f"📍 *域名：* `{domain}`\n"
-                result_text += f"👤 *提交者：* @{escaped_username}\n"
+                target_domain = result.get("target_domain", domain)
+                result_text = "✅ *直连规则已自动添加*\n\n"
+                result_text += f"🧭 `DOMAIN-SUFFIX,{target_domain}`\n"
+                result_text += f"👤 *提交者：* {identity}\n"
                 if result.get("commit_url"):
-                    result_text += f"🔗 *查看提交：* [点击查看]({result['commit_url']})\n"
+                    short_sha = str(result.get("commit_sha", ""))[:8]
+                    link_label = (
+                        f"查看 GitHub 提交 {short_sha}"
+                        if short_sha
+                        else "查看 GitHub 提交"
+                    )
+                    result_text += f"🔗 [{link_label}]({result['commit_url']})\n"
                 result_text += f"\n💡 本小时内还可添加 {remaining} 个域名"
                 
             elif result["action"] == "exists":
@@ -263,7 +281,10 @@ class GroupHandler:
             else:  # error
                 result_text = "❌ *处理失败*\n\n"
                 result_text += f"📍 *域名：* `{domain}`\n"
-                result_text += f"❌ {result['message']}"
+                error = self.handler_manager.escape_markdown(
+                    str(result.get("message", "未知错误"))[:300]
+                )
+                result_text += f"❌ {error}"
 
             await processing_msg.edit_text(result_text, reply_markup=reply_markup, parse_mode='Markdown')
             

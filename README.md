@@ -7,7 +7,7 @@
 Rule-Bot 是一个自托管的 Telegram 机器人，适合维护 Mihomo / Clash 直连规则仓库。它把域名查询、网络信息检查、人工确认和 GitHub 提交放进一个清晰的聊天流程，减少重复规则和误提交。
 
 > [!IMPORTANT]
-> Rule-Bot 不是网页应用，也不是开箱即用的公共机器人。部署完成后，通过自己在 [@BotFather](https://t.me/BotFather) 创建的 Telegram Bot 使用。
+> Rule-Bot 不是网页应用。[Custom_OpenClash_Rules](https://github.com/Aethersailor/Custom_OpenClash_Rules) 用户可以直接使用配套机器人 [@asailor_rulebot](https://t.me/asailor_rulebot)；维护其他规则仓库或需要独立服务时，再部署自己的实例。
 
 ## 能做什么
 
@@ -125,5 +125,6 @@ Rule-Bot Client 入口默认关闭。启用前应阅读 [Wiki 接入说明](http
 
 ## 社区与许可
 
+- 配套机器人：[@asailor_rulebot](https://t.me/asailor_rulebot)
 - 交流：[Custom OpenClash Rules 交流群](https://t.me/custom_openclash_rules_group)
 - 许可：[GNU General Public License v3.0](LICENSE)

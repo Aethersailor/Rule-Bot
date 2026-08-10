@@ -5,7 +5,6 @@
 
 import secrets
 import time
-import unicodedata
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 from collections import defaultdict
@@ -73,7 +72,6 @@ class HandlerManager:
         self.MAX_DESCRIPTION_LENGTH = 20
         self.MAX_ADDS_PER_HOUR = 50
         self.MAX_DETAIL_LINES = 4
-        self.MAX_DETAIL_LINE_LENGTH = 56
         self.STATE_TTL = 1800
         self.ACTION_TTL = 900
         self.MAX_USER_STATES = 4096
@@ -565,7 +563,7 @@ class HandlerManager:
 
     def _format_telegram_identity(self, user) -> str:
         """Format a Telegram identity for Markdown-visible messages."""
-        identity = self._truncate_display(self._raw_telegram_identity(user), 40)
+        identity = self._single_line_display(self._raw_telegram_identity(user))
         identity = self.escape_markdown(identity)
         if getattr(user, "username", None):
             return f"@{identity}"
@@ -610,45 +608,18 @@ class HandlerManager:
         )
 
     @staticmethod
-    def _display_width(value: object) -> int:
-        width = 0
-        for char in str(value):
-            if unicodedata.combining(char):
-                continue
-            width += 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
-        return width
-
-    @classmethod
-    def _truncate_display(cls, value: object, max_width: int = 56) -> str:
-        """Collapse and bound dynamic text by its approximate rendered width."""
-        text = " ".join(str(value).split())
-        if cls._display_width(text) <= max_width:
-            return text
-        visible = []
-        width = 0
-        for char in text:
-            char_width = (
-                0
-                if unicodedata.combining(char)
-                else 2
-                if unicodedata.east_asian_width(char) in {"W", "F"}
-                else 1
-            )
-            if width + char_width > max_width - 1:
-                break
-            visible.append(char)
-            width += char_width
-        return "".join(visible).rstrip() + "…"
+    def _single_line_display(value: object) -> str:
+        """Normalize dynamic text without discarding visible content."""
+        return " ".join(str(value).split())
 
     def _format_rule_matches(self, matches: list, limit: Optional[int] = None) -> str:
-        """Bound dynamic GitHub matches so Telegram messages remain below limits."""
+        """Format dynamic GitHub matches as complete, independently wrapped rows."""
         if not matches:
             return ""
         limit = limit or getattr(self, "MAX_DETAIL_LINES", 4)
-        line_limit = getattr(self, "MAX_DETAIL_LINE_LENGTH", 56)
         lines = []
         for match in matches[:limit]:
-            rule = self._truncate_display(match.get("rule", ""), line_limit - 12)
+            rule = self._single_line_display(match.get("rule", ""))
             lines.append(f"• 第 {match.get('line', '?')} 行：{self.escape_markdown(rule)}")
         remaining = len(matches) - limit
         if remaining > 0:
@@ -659,7 +630,7 @@ class HandlerManager:
     def _format_value_list(values: list, limit: int = 3) -> str:
         """Format network values one-per-line for narrow Telegram clients."""
         visible = [
-            HandlerManager._truncate_display(value, 56)
+            HandlerManager._single_line_display(value)
             for value in list(values or [])[:limit]
         ]
         remaining = len(values or []) - len(visible)
@@ -704,9 +675,7 @@ class HandlerManager:
                 [
                     "",
                     "💡 *判断依据*",
-                    self.escape_markdown(
-                        self._truncate_display(recommendation, 56)
-                    ),
+                    self.escape_markdown(self._single_line_display(recommendation)),
                 ]
             )
         if not should_reject:
@@ -880,7 +849,7 @@ class HandlerManager:
 
     def _build_main_menu_text(self, username: str) -> str:
         """构建主菜单文案"""
-        username = self.escape_markdown(self._truncate_display(username, 24))
+        username = self.escape_markdown(self._single_line_display(username))
         repo = str(self.config.GITHUB_REPO).strip()
         repo_label = self.escape_markdown(repo)
         return "\n".join(
@@ -1024,9 +993,7 @@ class HandlerManager:
         limit = limit or self.MAX_DETAIL_LINES
         lines = []
         for detail in details[:limit]:
-            detail = self._truncate_display(
-                detail, self.MAX_DETAIL_LINE_LENGTH - 2
-            )
+            detail = self._single_line_display(detail)
             lines.append(f"• {self.escape_markdown(detail)}")
 
         remaining = len(details) - limit
@@ -1048,7 +1015,7 @@ class HandlerManager:
         github_exists = bool(github_result.get("exists"))
         check_failed = "error" in check_result
         matches = github_result.get("matches", [])
-        visible_domain = self._truncate_display(domain, 56)
+        visible_domain = self._single_line_display(domain)
 
         if github_unavailable:
             github_status = "暂时无法读取"
@@ -1109,8 +1076,13 @@ class HandlerManager:
             and not github_exists
             and not in_geosite
         ):
-            visible = self._truncate_display(recommendation, 48)
-            lines.append(f"💡 综合判断：{self.escape_markdown(visible)}")
+            lines.extend(
+                [
+                    "",
+                    "💡 *综合判断*",
+                    self.escape_markdown(self._single_line_display(recommendation)),
+                ]
+            )
         return "\n".join(lines)
 
     def _build_query_detail_text(
@@ -1120,7 +1092,7 @@ class HandlerManager:
         check_result: dict,
     ) -> str:
         """Build a bounded technical page without repeating the summary."""
-        visible_domain = self._truncate_display(domain, 56)
+        visible_domain = self._single_line_display(domain)
         lines = ["🔎 *技术详情*", "", f"`{visible_domain}`"]
         github_unavailable = bool(github_result.get("error"))
         matches = github_result.get("matches", [])

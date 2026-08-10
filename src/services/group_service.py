@@ -42,9 +42,9 @@ class GroupService:
         return text
 
     @staticmethod
-    def _escape_inline_code(value: object, max_length: int = 253) -> str:
-        """Keep a dynamic value on one safe legacy-Markdown code line."""
-        text = " ".join(str(value).split())[:max_length]
+    def _escape_inline_code(value: object) -> str:
+        """Keep a complete dynamic value on one safe legacy-Markdown code line."""
+        text = " ".join(str(value).split())
         return text.replace("\\", "\\\\").replace("`", "\\`")
     
     async def check_user_in_group(

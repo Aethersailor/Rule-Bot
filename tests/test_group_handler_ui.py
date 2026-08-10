@@ -33,11 +33,12 @@ class TestGroupHandlerResultPages(unittest.IsolatedAsyncioTestCase):
         )
         return handler
 
-    async def test_error_detail_is_single_line_and_bounded(self):
+    async def test_error_detail_is_single_line_and_complete(self):
+        detail = f"bad\n{'x' * 300}*"
         handler = self._handler_for_result(
             {
                 "action": "error",
-                "message": f"bad\n{'x' * 300}*",
+                "message": detail,
             }
         )
         processing = SimpleNamespace(edit_text=AsyncMock())
@@ -52,7 +53,8 @@ class TestGroupHandlerResultPages(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("bad\n", text)
         self.assertIn("请稍后再次 @机器人", text)
         self.assertIn("🛡️ 本次操作未修改任何规则", text)
-        self.assertLess(len(text), 320)
+        self.assertIn(f"bad {'x' * 300}\\*", text)
+        self.assertNotIn("...", text)
 
     async def test_uncertain_write_result_warns_before_any_retry(self):
         handler = self._handler_for_result(

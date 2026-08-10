@@ -20,16 +20,14 @@ class GroupHandler:
     """群组消息处理器"""
 
     @staticmethod
-    def _escape_inline_code(value: object, max_length: int = 253) -> str:
-        """Keep a dynamic value on one safe legacy-Markdown code line."""
-        text = " ".join(str(value).split())[:max_length]
+    def _escape_inline_code(value: object) -> str:
+        """Keep a complete dynamic value on one safe legacy-Markdown code line."""
+        text = " ".join(str(value).split())
         return text.replace("\\", "\\\\").replace("`", "\\`")
 
-    def _escape_detail(self, value: object, max_length: int = 160) -> str:
-        """Format a short, single-line dynamic explanation."""
+    def _escape_detail(self, value: object) -> str:
+        """Format a complete dynamic explanation and let Telegram wrap it."""
         text = " ".join(str(value).split())
-        if len(text) > max_length:
-            text = f"{text[: max_length - 3]}..."
         text = text.replace("\\", "\\\\")
         return self.handler_manager.escape_markdown(text)
 
@@ -244,7 +242,7 @@ class GroupHandler:
                 if user is not None
                 else self.handler_manager.escape_markdown(username)
             )
-            identity = " ".join(str(identity).split())[:80]
+            identity = " ".join(str(identity).split())
             safe_domain = self._escape_inline_code(domain)
             processing_msg = await message.reply_text(
                 "🔍 *正在检查域名*\n\n"

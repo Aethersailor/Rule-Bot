@@ -21,7 +21,6 @@ class TestVisibleSafety(unittest.TestCase):
             ANNOUNCEMENT_GROUP_ID=-100123 if rule_bot_client_enabled else None,
         )
         manager.MAX_DETAIL_LINES = 4
-        manager.MAX_DETAIL_LINE_LENGTH = 56
         manager.MAX_DESCRIPTION_LENGTH = 20
         return manager
 
@@ -74,6 +73,54 @@ class TestVisibleSafety(unittest.TestCase):
         self.assertNotIn("结论：", text)
         self.assertNotIn("检查详情", text)
 
+    def test_add_review_preserves_complete_recommendation(self):
+        manager = self._manager()
+        manager.domain_checker = SimpleNamespace(
+            get_target_domain_to_add=MagicMock(return_value="codexradar.com"),
+            should_reject=MagicMock(return_value=True),
+        )
+        recommendation = (
+            "❌ 不建议添加可注册域名 codexradar.com："
+            "域名 IP 和 NS 服务器都不在中国大陆"
+        )
+
+        text, _ = manager._build_add_review_text(
+            "codexradar.com",
+            {"recommendation": recommendation},
+            SimpleNamespace(id=2, username="alice", first_name="Alice"),
+        )
+
+        self.assertIn(f"💡 *判断依据*\n{recommendation}", text)
+        self.assertNotIn("…", text)
+
+    def test_query_pages_preserve_complete_dynamic_text(self):
+        manager = self._manager()
+        recommendation = "综合判断：" + "完整内容" * 20
+        detail = "归属检查：" + "详细结果" * 20
+        rule = "DOMAIN-SUFFIX," + "long-label." * 12 + "example.com"
+        check_result = {
+            "domain_ips": [],
+            "second_level_ips": [],
+            "details": [detail],
+            "recommendation": recommendation,
+        }
+        github_result = {
+            "exists": False,
+            "matches": [{"line": 42, "rule": rule}],
+        }
+
+        summary = manager._build_query_summary_text(
+            "example.com", github_result, False, check_result, "ℹ️ *查询完成*"
+        )
+        technical = manager._build_query_detail_text(
+            "example.com", github_result, check_result
+        )
+
+        self.assertIn(f"💡 *综合判断*\n{recommendation}", summary)
+        self.assertIn(detail, technical)
+        self.assertIn(manager.escape_markdown(rule), technical)
+        self.assertNotIn("…", summary + technical)
+
 
 class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
     @staticmethod
@@ -100,7 +147,6 @@ class TestVisibleFlows(unittest.IsolatedAsyncioTestCase):
         manager.ACTION_TTL = 900
         manager.MAX_USER_STATES = 4096
         manager.MAX_DETAIL_LINES = 4
-        manager.MAX_DETAIL_LINE_LENGTH = 56
         manager.MAX_DESCRIPTION_LENGTH = 20
         manager.MAX_ADDS_PER_HOUR = 50
         return manager

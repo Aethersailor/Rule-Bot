@@ -9,7 +9,7 @@ class TestGroupHandlerText(unittest.TestCase):
     def setUp(self):
         self.handler = GroupHandler.__new__(GroupHandler)
         self.handler.handler_manager = SimpleNamespace(
-            escape_markdown=lambda value: str(value)
+            escape_markdown=str
         )
 
     def test_cn_page_has_no_nested_bold_code(self):

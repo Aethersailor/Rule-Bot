@@ -251,7 +251,7 @@ class TestServices(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(entered)
             task.cancel()
             with self.assertRaises(asyncio.CancelledError) as caught:
-                await task
+                _ = await task
             self.assertTrue(caught.exception.submission_uncertain)
         finally:
             release.set()

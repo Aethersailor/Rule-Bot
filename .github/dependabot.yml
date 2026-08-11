@@ -10,7 +10,7 @@ updates:
       timezone: "Asia/Shanghai"
     open-pull-requests-limit: 5
     rebase-strategy: "auto"
-    labels: ["dependencies","github-actions"]
+    labels: ["dependencies"]
     groups:
       github-actions:
         patterns: ["*"]
@@ -43,7 +43,7 @@ updates:
       timezone: "Asia/Shanghai"
     open-pull-requests-limit: 5
     rebase-strategy: "auto"
-    labels: ["dependencies","docker"]
+    labels: ["dependencies"]
     groups:
       docker:
         patterns: ["*"]

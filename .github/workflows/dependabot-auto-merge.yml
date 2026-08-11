@@ -107,24 +107,70 @@ jobs:
           fi
           echo "current=$current" >> "$GITHUB_OUTPUT"
 
-      - name: Reconcile automatic merge label
+      - name: Publish policy decision
+        env:
+          PR_NUMBER: ${{ steps.policy.outputs.pr_number }}
+          UPDATE_TYPE: ${{ steps.policy.outputs.update_type }}
+          ELIGIBLE: ${{ steps.policy.outputs.eligible }}
+          CURRENT: ${{ steps.live.outputs.current }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$ELIGIBLE" != true ]]; then
+            decision="manual review required; major updates are never merged automatically"
+          elif [[ "$CURRENT" != true ]]; then
+            decision="eligible after Dependabot rebases onto the current master"
+          else
+            decision="eligible for automatic merge after all required checks pass"
+          fi
+
+          {
+            echo "### Dependabot policy decision"
+            echo
+            echo "- Pull request: #$PR_NUMBER"
+            echo "- Update type: \`$UPDATE_TYPE\`"
+            echo "- Decision: $decision"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Reconcile Dependabot policy labels
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.policy.outputs.pr_number }}
           ELIGIBLE: ${{ steps.policy.outputs.eligible }}
+          CURRENT: ${{ steps.live.outputs.current }}
         shell: bash
         run: |
           set -euo pipefail
-          label="dependabot-automerge"
-          gh label create "$label" --repo "$GH_REPO" --force \
+          automerge_label="dependabot-automerge"
+          rebase_label="dependabot-rebase-needed"
+          manual_label="dependabot-manual-review"
+
+          gh label create "$automerge_label" --repo "$GH_REPO" --force \
             --color "0e8a16" \
             --description "Minor or patch Dependabot update eligible for automatic merge"
-          if [[ "$ELIGIBLE" == true ]]; then
-            gh pr edit "$PR_NUMBER" --repo "$GH_REPO" --add-label "$label"
+          gh label create "$rebase_label" --repo "$GH_REPO" --force \
+            --color "fbca04" \
+            --description "Eligible Dependabot update waiting for a current master base"
+          gh label create "$manual_label" --repo "$GH_REPO" --force \
+            --color "d93f0b" \
+            --description "Dependabot update requires manual review"
+
+          if [[ "$ELIGIBLE" != true ]]; then
+            selected_label="$manual_label"
+            obsolete_labels=("$automerge_label" "$rebase_label")
+          elif [[ "$CURRENT" != true ]]; then
+            selected_label="$rebase_label"
+            obsolete_labels=("$automerge_label" "$manual_label")
           else
-            gh pr edit "$PR_NUMBER" --repo "$GH_REPO" --remove-label "$label" || true
+            selected_label="$automerge_label"
+            obsolete_labels=("$rebase_label" "$manual_label")
           fi
+
+          gh pr edit "$PR_NUMBER" --repo "$GH_REPO" --add-label "$selected_label"
+          for label in "${obsolete_labels[@]}"; do
+            gh pr edit "$PR_NUMBER" --repo "$GH_REPO" --remove-label "$label" || true
+          done
 
       - name: Wait for the exact required checks
         if: steps.policy.outputs.eligible == 'true' && steps.live.outputs.current == 'true'

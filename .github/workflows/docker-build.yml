@@ -3,18 +3,20 @@ name: Build and Push Docker Image
 on:
   push:
     branches: [master]
+    tags: ["v*"]
   pull_request:
     branches: [master]
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # PR checks can be superseded. A publishing run must reach its source-head
-  # checks so an older event can never cancel or overwrite a newer image.
+  # Serialize every publishing event because both master and version tags can
+  # update registry state. PR checks remain independently supersedable.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  IMAGE_NAME: aethersailor/rule-bot
+  DOCKERHUB_IMAGE: aethersailor/rule-bot
+  GHCR_IMAGE: ghcr.io/aethersailor/rule-bot
 
 permissions:
   contents: read
@@ -50,9 +52,14 @@ jobs:
   build-and-push:
     needs: validate
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
@@ -67,40 +74,75 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Verify publish source is current master
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify publish source
         if: github.event_name != 'pull_request'
         shell: bash
         env:
           EXPECTED_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REF" = "refs/heads/master"
-          remote_sha="$(git ls-remote origin refs/heads/master | awk '{print $1}')"
-          test -n "$remote_sha"
-          if [[ "$remote_sha" != "$EXPECTED_SHA" ]]; then
-            echo "refusing to publish stale source: expected $EXPECTED_SHA, master is $remote_sha" >&2
-            exit 1
-          fi
+          case "$GITHUB_REF" in
+            refs/heads/master)
+              remote_sha="$(git ls-remote origin refs/heads/master | awk '{print $1}')"
+              test -n "$remote_sha"
+              if [[ "$remote_sha" != "$EXPECTED_SHA" ]]; then
+                echo "refusing to publish stale source: expected $EXPECTED_SHA, master is $remote_sha" >&2
+                exit 1
+              fi
+              ;;
+            refs/tags/v*)
+              if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "release tags must use vMAJOR.MINOR.PATCH" >&2
+                exit 1
+              fi
+              remote_sha="$(git ls-remote origin "refs/tags/${GITHUB_REF_NAME}^{}" | awk '{print $1}')"
+              if [[ -z "$remote_sha" ]]; then
+                remote_sha="$(git ls-remote origin "refs/tags/${GITHUB_REF_NAME}" | awk '{print $1}')"
+              fi
+              if [[ "$remote_sha" != "$EXPECTED_SHA" ]]; then
+                echo "refusing to publish mismatched tag: expected $EXPECTED_SHA, tag resolves to $remote_sha" >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "publishing is limited to master and vMAJOR.MINOR.PATCH tags" >&2
+              exit 1
+              ;;
+          esac
 
       - name: Extract image metadata
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
-          images: ${{ env.IMAGE_NAME }}
-          tags: type=raw,value=sha-${{ github.sha }}
+          images: |
+            ${{ env.DOCKERHUB_IMAGE }}
+            ${{ env.GHCR_IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
           labels: |
             org.opencontainers.image.title=Rule Bot
             org.opencontainers.image.description=Telegram bot for rule management
             org.opencontainers.image.vendor=AetherSailor
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
-      - name: Build and optionally push immutable multi-arch image
+      - name: Build and optionally publish multi-arch image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -111,70 +153,108 @@ jobs:
         if: github.event_name != 'pull_request'
         shell: bash
         env:
-          CANDIDATE_IMAGE: ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+          PUBLISHED_TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           set -euo pipefail
+          image="$(sed -n '1p' <<<"$PUBLISHED_TAGS")"
+          test -n "$image"
           for platform in linux/amd64 linux/arm64; do
             docker run --rm --pull always --platform "$platform" \
-              --entrypoint python "$CANDIDATE_IMAGE" \
+              --entrypoint python "$image" \
               -c 'import aiohttp, github, maxminddb, telegram; import src.main'
           done
 
-      - name: Promote current master to latest
+      - name: Verify published images
         if: github.event_name != 'pull_request'
         shell: bash
         env:
           EXPECTED_SHA: ${{ github.sha }}
-          CANDIDATE_IMAGE: ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+          PUBLISHED_TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           set -euo pipefail
-          remote_sha="$(git ls-remote origin refs/heads/master | awk '{print $1}')"
-          test -n "$remote_sha"
-          if [[ "$remote_sha" != "$EXPECTED_SHA" ]]; then
-            echo "master advanced during build; keeping candidate but not updating latest" >&2
-            exit 1
-          fi
-          docker buildx imagetools create \
-            --tag "${IMAGE_NAME}:latest" \
-            "$CANDIDATE_IMAGE"
-
-      - name: Verify latest platforms and source revision
-        if: github.event_name != 'pull_request'
-        shell: bash
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          image="${IMAGE_NAME}:latest"
-          for attempt in {1..12}; do
-            manifest="$(docker buildx imagetools inspect "$image" \
-              --format '{{json .Manifest}}' 2>/dev/null || true)"
-            if jq -e '
-              ([.manifests[]?.platform | select(.os == "linux") | .architecture] | index("amd64")) != null
-              and
-              ([.manifests[]?.platform | select(.os == "linux") | .architecture] | index("arm64")) != null
-            ' <<<"$manifest" >/dev/null 2>&1; then
-              verified=true
-              for arch in amd64 arm64; do
-                digest="$(jq -er --arg arch "$arch" '
-                  .manifests[]
-                  | select(.platform.os == "linux" and .platform.architecture == $arch)
-                  | .digest
-                ' <<<"$manifest")"
-                image_config="$(docker buildx imagetools inspect \
-                  "${IMAGE_NAME}@${digest}" --format '{{json .Image}}')"
-                revision="$(jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' \
-                  <<<"$image_config")"
-                if [[ "$revision" != "$EXPECTED_SHA" ]]; then
-                  verified=false
+          expected_index_digest=""
+          while IFS= read -r image; do
+            [[ -n "$image" ]] || continue
+            published=false
+            for attempt in {1..12}; do
+              manifest="$(docker buildx imagetools inspect "$image" \
+                --format '{{json .Manifest}}' 2>/dev/null || true)"
+              if jq -e '
+                ([.manifests[]?.platform | select(.os == "linux") | .architecture] | index("amd64")) != null
+                and
+                ([.manifests[]?.platform | select(.os == "linux") | .architecture] | index("arm64")) != null
+              ' <<<"$manifest" >/dev/null 2>&1; then
+                verified=true
+                for arch in amd64 arm64; do
+                  repository="${image%:*}"
+                  digest="$(jq -er --arg arch "$arch" '
+                    .manifests[]
+                    | select(.platform.os == "linux" and .platform.architecture == $arch)
+                    | .digest
+                  ' <<<"$manifest")"
+                  image_config="$(docker buildx imagetools inspect \
+                    "${repository}@${digest}" --format '{{json .Image}}')"
+                  revision="$(jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' \
+                    <<<"$image_config")"
+                  if [[ "$revision" != "$EXPECTED_SHA" ]]; then
+                    verified=false
+                    break
+                  fi
+                done
+                if [[ "$verified" == true ]]; then
+                  raw_manifest="$(docker buildx imagetools inspect "$image" --raw)"
+                  index_digest="sha256:$(printf '%s' "$raw_manifest" | sha256sum | awk '{print $1}')"
+                  if [[ -z "$expected_index_digest" ]]; then
+                    expected_index_digest="$index_digest"
+                  elif [[ "$index_digest" != "$expected_index_digest" ]]; then
+                    echo "registry digest mismatch for $image: $index_digest != $expected_index_digest" >&2
+                    exit 1
+                  fi
+                  published=true
                   break
                 fi
-              done
-              if [[ "$verified" == true ]]; then
-                exit 0
               fi
+              sleep 10
+            done
+            if [[ "$published" != true ]]; then
+              echo "$image does not contain verified amd64/arm64 images for $EXPECTED_SHA" >&2
+              exit 1
             fi
-            sleep 10
-          done
-          echo "latest does not contain verified amd64/arm64 images for $EXPECTED_SHA" >&2
-          exit 1
+          done <<<"$PUBLISHED_TAGS"
+          test -n "$expected_index_digest"
+
+      - name: Remove legacy SHA tags from Docker Hub
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          payload="$(jq -n \
+            --arg username "$DOCKERHUB_USERNAME" \
+            --arg password "$DOCKERHUB_TOKEN" \
+            '{username: $username, password: $password}')"
+          jwt="$(curl --fail --silent --show-error \
+            -H 'Content-Type: application/json' \
+            -d "$payload" \
+            https://hub.docker.com/v2/users/login/ | jq -er '.token // .access_token')"
+          tags_url='https://hub.docker.com/v2/repositories/aethersailor/rule-bot/tags?page_size=100'
+          tags="$(curl --fail --silent --show-error \
+            -H "Authorization: JWT $jwt" \
+            "$tags_url" | jq -r '.results[].name')"
+          while IFS= read -r tag; do
+            if [[ "$tag" == sha-* ]]; then
+              curl --fail --silent --show-error -X DELETE \
+                -H "Authorization: JWT $jwt" \
+                "https://hub.docker.com/v2/repositories/aethersailor/rule-bot/tags/$tag/"
+            fi
+          done <<<"$tags"
+          remaining="$(curl --fail --silent --show-error \
+            -H "Authorization: JWT $jwt" \
+            "$tags_url")"
+          if ! jq -e '[.results[].name | select(startswith("sha-"))] | length == 0' \
+            <<<"$remaining" >/dev/null; then
+            echo "Docker Hub still contains legacy sha-* tags" >&2
+            exit 1
+          fi

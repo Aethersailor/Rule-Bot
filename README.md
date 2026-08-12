@@ -10,7 +10,7 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/aethersailor/rule-bot)](https://hub.docker.com/r/aethersailor/rule-bot)
 [![License](https://img.shields.io/github/license/Aethersailor/Rule-Bot)](LICENSE)
 
-[🚀 直接使用](https://t.me/asailor_rulebot) · [📚 使用文档](https://github.com/Aethersailor/Rule-Bot/wiki) · [🐳 Docker Hub](https://hub.docker.com/r/aethersailor/rule-bot) · [🔐 隐私说明](PRIVACY.md)
+[🚀 直接使用](https://t.me/asailor_rulebot) · [📚 使用文档](https://github.com/Aethersailor/Rule-Bot/wiki) · [🐳 Docker Hub](https://hub.docker.com/r/aethersailor/rule-bot) · [📦 GHCR](https://github.com/Aethersailor/Rule-Bot/pkgs/container/rule-bot) · [🔐 隐私说明](PRIVACY.md)
 
 </div>
 

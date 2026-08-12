@@ -223,7 +223,7 @@ jobs:
           done <<<"$PUBLISHED_TAGS"
           test -n "$expected_index_digest"
 
-      - name: Remove legacy SHA tags from Docker Hub
+      - name: Remove obsolete Docker Hub tags
         if: github.event_name != 'pull_request'
         shell: bash
         env:
@@ -244,7 +244,8 @@ jobs:
             -H "Authorization: JWT $jwt" \
             "$tags_url" | jq -r '.results[].name')"
           while IFS= read -r tag; do
-            if [[ "$tag" == sha-* ]]; then
+            if [[ -n "$tag" && "$tag" != "latest" \
+              && ! "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               curl --fail --silent --show-error -X DELETE \
                 -H "Authorization: JWT $jwt" \
                 "https://hub.docker.com/v2/repositories/aethersailor/rule-bot/tags/$tag/"
@@ -255,11 +256,72 @@ jobs:
               -H 'Cache-Control: no-cache' \
               -H "Authorization: JWT $jwt" \
               "$tags_url")"
-            if jq -e '[.results[].name | select(startswith("sha-"))] | length == 0' \
+            if jq -e '[.results[].name | select(
+              . != "latest" and (test("^[0-9]+\\.[0-9]+\\.[0-9]+$") | not)
+            )] | length == 0' \
               <<<"$remaining" >/dev/null; then
+              break
+            fi
+            sleep 10
+          done
+          if ! jq -e '[.results[].name | select(
+            . != "latest" and (test("^[0-9]+\\.[0-9]+\\.[0-9]+$") | not)
+          )] | length == 0' <<<"$remaining" >/dev/null; then
+            echo "Docker Hub still contains obsolete tags" >&2
+            exit 1
+          fi
+
+      - name: Remove unreferenced GHCR versions
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          package="rule-bot"
+          versions_api="/users/${GITHUB_REPOSITORY_OWNER}/packages/container/${package}/versions?per_page=100"
+          versions="$(gh api --paginate --slurp "$versions_api" | jq 'add')"
+          tagged_roots="$(mktemp)"
+          protected="$(mktemp)"
+          jq -r '.[] | select((.metadata.container.tags // []) | length > 0) | .name' \
+            <<<"$versions" >"$tagged_roots"
+          cp "$tagged_roots" "$protected"
+
+          while IFS= read -r root_digest; do
+            [[ -n "$root_digest" ]] || continue
+            docker buildx imagetools inspect "${GHCR_IMAGE}@${root_digest}" \
+              --format '{{json .Manifest}}' \
+              | jq -r '.manifests[]?.digest' >>"$protected"
+          done <"$tagged_roots"
+          sort -u -o "$protected" "$protected"
+
+          mapfile -t obsolete_ids < <(jq -r --rawfile protected "$protected" '
+            ($protected | split("\n") | map(select(length > 0))) as $protected_digests
+            | .[]
+            | select(((.metadata.container.tags // []) | length) == 0)
+            | .name as $digest
+            | select(($protected_digests | index($digest)) == null)
+            | .id
+          ' <<<"$versions")
+          for version_id in "${obsolete_ids[@]}"; do
+            gh api --method DELETE \
+              "/users/${GITHUB_REPOSITORY_OWNER}/packages/container/${package}/versions/${version_id}"
+          done
+
+          for attempt in {1..12}; do
+            remaining_ids="$(gh api --paginate --slurp "$versions_api" \
+              | jq -r 'add[] | .id')"
+            stale=false
+            for version_id in "${obsolete_ids[@]}"; do
+              if grep -Fxq "$version_id" <<<"$remaining_ids"; then
+                stale=true
+                break
+              fi
+            done
+            if [[ "$stale" == false ]]; then
               exit 0
             fi
             sleep 10
           done
-          echo "Docker Hub still contains legacy sha-* tags" >&2
+          echo "GHCR still contains unreferenced package versions" >&2
           exit 1

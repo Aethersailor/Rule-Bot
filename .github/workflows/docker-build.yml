@@ -250,11 +250,16 @@ jobs:
                 "https://hub.docker.com/v2/repositories/aethersailor/rule-bot/tags/$tag/"
             fi
           done <<<"$tags"
-          remaining="$(curl --fail --silent --show-error \
-            -H "Authorization: JWT $jwt" \
-            "$tags_url")"
-          if ! jq -e '[.results[].name | select(startswith("sha-"))] | length == 0' \
-            <<<"$remaining" >/dev/null; then
-            echo "Docker Hub still contains legacy sha-* tags" >&2
-            exit 1
-          fi
+          for attempt in {1..12}; do
+            remaining="$(curl --fail --silent --show-error \
+              -H 'Cache-Control: no-cache' \
+              -H "Authorization: JWT $jwt" \
+              "$tags_url")"
+            if jq -e '[.results[].name | select(startswith("sha-"))] | length == 0' \
+              <<<"$remaining" >/dev/null; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Docker Hub still contains legacy sha-* tags" >&2
+          exit 1

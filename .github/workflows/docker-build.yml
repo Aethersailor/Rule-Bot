@@ -17,6 +17,7 @@ concurrency:
 env:
   DOCKERHUB_IMAGE: aethersailor/rule-bot
   GHCR_IMAGE: ghcr.io/aethersailor/rule-bot
+  MAX_COMPRESSED_PLATFORM_SIZE: 40000000
 
 permissions:
   contents: read
@@ -200,6 +201,21 @@ jobs:
                     verified=false
                     break
                   fi
+                  if jq -e '
+                    any(.history[]?; (.created_by // "") | contains("COPY /wheels"))
+                  ' <<<"$image_config" >/dev/null; then
+                    echo "$repository@$digest contains a copied wheelhouse layer" >&2
+                    exit 1
+                  fi
+                  platform_manifest="$(docker buildx imagetools inspect \
+                    "${repository}@${digest}" --raw)"
+                  compressed_size="$(jq -er '[.layers[].size] | add' \
+                    <<<"$platform_manifest")"
+                  if (( compressed_size > MAX_COMPRESSED_PLATFORM_SIZE )); then
+                    echo "$repository@$digest is $compressed_size bytes; limit is $MAX_COMPRESSED_PLATFORM_SIZE" >&2
+                    exit 1
+                  fi
+                  echo "$repository@$digest compressed size: $compressed_size bytes"
                 done
                 if [[ "$verified" == true ]]; then
                   raw_manifest="$(docker buildx imagetools inspect "$image" --raw)"

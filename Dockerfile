@@ -1,5 +1,7 @@
-# 多阶段构建：编译阶段
-FROM python:3.14-alpine AS builder
+# syntax=docker/dockerfile:1
+
+# 多阶段构建：编译阶段。固定多架构索引，确保相同提交使用相同基础镜像。
+FROM python:3.14-alpine@sha256:05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc AS builder
 
 # 设置构建参数
 ARG BUILDKIT_INLINE_CACHE=1
@@ -32,8 +34,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
     && pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
 
-# 运行阶段：使用最小化镜像
-FROM python:3.14-alpine
+# 运行阶段：使用与构建阶段相同的最小化镜像
+FROM python:3.14-alpine@sha256:05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc
 
 # 设置运行时环境变量
 ENV PYTHONUNBUFFERED=1
@@ -52,20 +54,19 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
-# 从编译阶段复制预编译的wheel包
-COPY --from=builder /wheels /wheels
-
-# 安装预编译的包（避免编译）
-RUN pip install --no-cache-dir /wheels/* && rm -rf /wheels
-
-# 复制应用代码
-COPY src/ ./src/
-
-# 使用非root用户运行（安全考虑）
+# 使用非 root 用户运行（安全考虑）
 RUN addgroup -g 1000 appuser && \
     adduser -D -s /bin/sh -u 1000 -G appuser appuser && \
     mkdir -p /app/data && \
-    chown -R appuser:appuser /app
+    chown appuser:appuser /app/data
+
+# 只读挂载构建阶段的 wheel，不把临时 wheelhouse 写入运行镜像层。
+RUN --mount=type=bind,from=builder,source=/wheels,target=/wheels \
+    pip install --no-cache-dir /wheels/*
+
+# 复制应用代码
+COPY --chown=appuser:appuser src/ ./src/
+
 USER appuser
 
 # Documentation only; listeners remain disabled unless explicitly configured.

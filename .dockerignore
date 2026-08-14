@@ -20,6 +20,7 @@ __pycache__
 *.pyd
 .Python
 env
+.venv
 pip-log.txt
 pip-delete-this-directory.txt
 .tox
@@ -34,6 +35,8 @@ coverage.xml
 .mypy_cache
 .pytest_cache
 .hypothesis
+.agents
+.codex
 
 # 临时文件
 *.tmp
@@ -69,4 +72,4 @@ build/
 node_modules/
 npm-debug.log*
 yarn-debug.log*
-yarn-error.log* 
+yarn-error.log*

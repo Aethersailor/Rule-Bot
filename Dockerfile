@@ -43,13 +43,8 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PIP_NO_CACHE_DIR=1
 ENV TZ=Asia/Shanghai
 
-# 安装运行时依赖（最小化）
-RUN apk add --no-cache \
-    ca-certificates \
-    tzdata \
-    && rm -rf /var/cache/apk/* \
-    && update-ca-certificates \
-    && cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+# 固定的 Python Alpine 基础镜像已包含 CA 证书与时区数据，仅配置运行时区。
+RUN cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
     && echo "Asia/Shanghai" > /etc/timezone
 
 WORKDIR /app

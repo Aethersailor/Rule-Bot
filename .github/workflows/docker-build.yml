@@ -135,6 +135,7 @@ jobs:
             org.opencontainers.image.description=Telegram bot for rule management
             org.opencontainers.image.vendor=AetherSailor
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.licenses=AGPL-3.0-only
             org.opencontainers.image.revision=${{ github.sha }}
 
       - name: Build and optionally publish multi-arch image
@@ -170,6 +171,7 @@ jobs:
         shell: bash
         env:
           EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_LICENSE: AGPL-3.0-only
           PUBLISHED_TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           set -euo pipefail
@@ -198,6 +200,13 @@ jobs:
                   revision="$(jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' \
                     <<<"$image_config")"
                   if [[ "$revision" != "$EXPECTED_SHA" ]]; then
+                    verified=false
+                    break
+                  fi
+                  license="$(jq -r '.config.Labels["org.opencontainers.image.licenses"] // empty' \
+                    <<<"$image_config")"
+                  if [[ "$license" != "$EXPECTED_LICENSE" ]]; then
+                    echo "$repository@$digest has unexpected OCI license label: $license" >&2
                     verified=false
                     break
                   fi

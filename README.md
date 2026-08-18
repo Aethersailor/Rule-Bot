@@ -163,7 +163,7 @@ Rule-Bot Client 入口默认关闭。启用前应阅读 [Wiki 接入说明](http
 | --- | --- |
 | 🤖 配套机器人 | [@asailor_rulebot](https://t.me/asailor_rulebot) |
 | 💬 交流群 | [Custom OpenClash Rules 交流群](https://t.me/custom_openclash_rules_group) |
-| 📄 开源许可 | [GNU General Public License v3.0](LICENSE) |
+| 📄 开源许可 | [GNU Affero General Public License v3.0](LICENSE) |
 
 ---
 

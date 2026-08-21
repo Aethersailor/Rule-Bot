@@ -194,6 +194,11 @@ class DomainChecker:
                     result["error_code"] = "nxdomain"
                     result["error"] = "域名不存在"
                     result["recommendation"] = "⚠️ 域名不存在，无法加入规则"
+                elif resolution_status == "empty":
+                    result["lookup_status"] = "empty"
+                    result["error_code"] = "empty_dns"
+                    result["error"] = "域名没有可用于归属判断的地址记录"
+                    result["recommendation"] = "⚠️ 域名没有地址记录，不加入规则"
                 else:
                     result["lookup_status"] = "unknown"
                     result["error"] = "暂时无法获取有效的 DNS 地址数据，请稍后重试"

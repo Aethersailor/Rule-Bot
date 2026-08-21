@@ -328,6 +328,8 @@ class HandlerManager:
             return {"status": "rate_limited", "domain": domain}
         if result.get("error_code") == "nxdomain":
             return {"status": "invalid_domain", "domain": domain}
+        if result.get("error_code") == "empty_dns":
+            return {"status": "rejected_policy", "domain": domain}
         return {"status": "temporary_error", "domain": domain}
     
     def set_user_state(self, user_id: int, state: str, data: Dict[str, Any] = None):

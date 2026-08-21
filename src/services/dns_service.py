@@ -260,7 +260,7 @@ class DNSService:
 
     async def classify_domain_resolution(
         self, domain: str
-    ) -> Literal["exists", "nxdomain", "unknown"]:
+    ) -> Literal["exists", "empty", "nxdomain", "unknown"]:
         """Distinguish a confirmed NXDOMAIN from a temporary resolver failure.
 
         The regular record helpers intentionally collapse empty answers and
@@ -288,15 +288,34 @@ class DNSService:
         )
         statuses = await asyncio.gather(*tasks, return_exceptions=True)
 
-        rcodes = [status for status in statuses if isinstance(status, int)]
-        if dns.rcode.NOERROR in rcodes:
+        outcomes = [
+            status
+            for status in statuses
+            if isinstance(status, tuple)
+            and len(status) == 2
+            and isinstance(status[0], int)
+            and isinstance(status[1], int)
+        ]
+        if any(
+            rcode == dns.rcode.NOERROR and answer_count > 0
+            for rcode, answer_count in outcomes
+        ):
             return "exists"
-        if rcodes.count(dns.rcode.NXDOMAIN) >= 2:
+        if sum(rcode == dns.rcode.NXDOMAIN for rcode, _ in outcomes) >= 2:
             logger.info(
                 "多个独立解析器确认域名不存在，domain_ref={}",
                 log_reference(domain),
             )
             return "nxdomain"
+        if sum(
+            rcode == dns.rcode.NOERROR and answer_count == 0
+            for rcode, answer_count in outcomes
+        ) >= 2:
+            logger.info(
+                "多个独立解析器确认域名没有地址记录，domain_ref={}",
+                log_reference(domain),
+            )
+            return "empty"
         return "unknown"
 
     @staticmethod
@@ -378,7 +397,7 @@ class DNSService:
 
     async def _perform_doh_rcode_query(
         self, server_url: str, query_data: bytes
-    ) -> Optional[int]:
+    ) -> Optional[tuple[int, int]]:
         """Return a DNS response code without treating NXDOMAIN as transport failure."""
         for attempt in range(2):
             try:
@@ -393,7 +412,8 @@ class DNSService:
                     ) as response:
                         if response.status == 200:
                             message = dns.message.from_wire(await response.read())
-                            return message.rcode()
+                            answer_count = sum(len(rrset) for rrset in message.answer)
+                            return message.rcode(), answer_count
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -403,7 +423,7 @@ class DNSService:
         return None
 
     @staticmethod
-    def _query_system_dns_status_sync(domain: str) -> Optional[int]:
+    def _query_system_dns_status_sync(domain: str) -> Optional[tuple[int, int]]:
         """Return the system resolver's DNS status without exposing the name."""
         import dns.resolver
 
@@ -411,12 +431,14 @@ class DNSService:
         resolver.timeout = 3
         resolver.lifetime = 6
         try:
-            resolver.resolve(domain, dns.rdatatype.A, raise_on_no_answer=False)
-            return dns.rcode.NOERROR
+            answer = resolver.resolve(
+                domain, dns.rdatatype.A, raise_on_no_answer=False
+            )
+            return dns.rcode.NOERROR, len(answer)
         except dns.resolver.NXDOMAIN:
-            return dns.rcode.NXDOMAIN
+            return dns.rcode.NXDOMAIN, 0
         except dns.resolver.NoAnswer:
-            return dns.rcode.NOERROR
+            return dns.rcode.NOERROR, 0
         except Exception:
             return None
     

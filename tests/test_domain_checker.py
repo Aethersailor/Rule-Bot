@@ -111,6 +111,11 @@ class DummyDNSServiceNXDOMAIN(DummyDNSServiceUnavailable):
         return "nxdomain"
 
 
+class DummyDNSServiceEmpty(DummyDNSServiceUnavailable):
+    async def classify_domain_resolution(self, domain: str):
+        return "empty"
+
+
 class DummyDNSServiceConcurrentPrimary:
     async def query_a_record(self, domain: str, use_edns_china: bool = True):
         await asyncio.sleep(0.05)
@@ -170,6 +175,14 @@ class TestDomainChecker(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["error_code"], "nxdomain")
         self.assertFalse(checker.should_reject(result))
 
+    async def test_confirmed_empty_dns_answer_is_terminal_policy_rejection(self):
+        checker = DomainChecker(DummyDNSServiceEmpty(), DummyGeoIPServiceNoChina())
+        result = await checker.check_domain_comprehensive("empty.example")
+
+        self.assertEqual(result["lookup_status"], "empty")
+        self.assertEqual(result["error_code"], "empty_dns")
+        self.assertFalse(checker.should_reject(result))
+
     async def test_primary_a_and_ns_queries_run_concurrently(self):
         checker = DomainChecker(DummyDNSServiceConcurrentPrimary(), DummyGeoIPService())
 
@@ -199,18 +212,25 @@ class TestDNSResolutionClassification(unittest.IsolatedAsyncioTestCase):
 
     async def test_two_independent_nxdomain_answers_are_terminal(self):
         status = await self.classify(
-            [dns.rcode.NXDOMAIN, dns.rcode.NXDOMAIN], None
+            [(dns.rcode.NXDOMAIN, 0), (dns.rcode.NXDOMAIN, 0)], None
         )
         self.assertEqual(status, "nxdomain")
 
-    async def test_noerror_answer_wins_over_negative_answers(self):
+    async def test_nonempty_noerror_answer_wins_over_negative_answers(self):
         status = await self.classify(
-            [dns.rcode.NXDOMAIN, dns.rcode.NOERROR], dns.rcode.NXDOMAIN
+            [(dns.rcode.NXDOMAIN, 0), (dns.rcode.NOERROR, 1)],
+            (dns.rcode.NXDOMAIN, 0),
         )
         self.assertEqual(status, "exists")
 
+    async def test_two_independent_empty_answers_are_terminal(self):
+        status = await self.classify(
+            [(dns.rcode.NOERROR, 0), (dns.rcode.NOERROR, 0)], None
+        )
+        self.assertEqual(status, "empty")
+
     async def test_one_negative_answer_is_not_enough_for_terminal_result(self):
-        status = await self.classify([dns.rcode.NXDOMAIN, None], None)
+        status = await self.classify([(dns.rcode.NXDOMAIN, 0), None], None)
         self.assertEqual(status, "unknown")
 
 

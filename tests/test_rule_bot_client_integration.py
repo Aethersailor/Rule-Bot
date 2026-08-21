@@ -375,6 +375,24 @@ class TestRuleBotClientSubmission(unittest.IsolatedAsyncioTestCase):
             {"status": "invalid_domain", "domain": "example.com"},
         )
 
+    async def test_confirmed_empty_dns_answer_is_terminal_policy_rejection(self):
+        manager = HandlerManager.__new__(HandlerManager)
+        manager.check_and_add_domain_auto = AsyncMock(
+            return_value={"action": "error", "error_code": "empty_dns"}
+        )
+
+        result = await manager.submit_rule_bot_client_domain(
+            "empty.example.com",
+            source="rule_bot_client_private",
+            rate_key=("rule_bot_client_private", 0),
+            max_adds=50,
+        )
+
+        self.assertEqual(
+            result,
+            {"status": "rejected_policy", "domain": "example.com"},
+        )
+
     async def test_duplicate_detected_during_write_is_terminal(self):
         manager = HandlerManager.__new__(HandlerManager)
         manager.github_service = SimpleNamespace(

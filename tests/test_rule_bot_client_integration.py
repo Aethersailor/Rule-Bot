@@ -357,6 +357,24 @@ class TestRuleBotClientSubmission(unittest.IsolatedAsyncioTestCase):
             max_adds=50,
         )
 
+    async def test_confirmed_nxdomain_is_returned_as_terminal_invalid_domain(self):
+        manager = HandlerManager.__new__(HandlerManager)
+        manager.check_and_add_domain_auto = AsyncMock(
+            return_value={"action": "error", "error_code": "nxdomain"}
+        )
+
+        result = await manager.submit_rule_bot_client_domain(
+            "missing.example.com",
+            source="rule_bot_client_private",
+            rate_key=("rule_bot_client_private", 0),
+            max_adds=50,
+        )
+
+        self.assertEqual(
+            result,
+            {"status": "invalid_domain", "domain": "example.com"},
+        )
+
     async def test_duplicate_detected_during_write_is_terminal(self):
         manager = HandlerManager.__new__(HandlerManager)
         manager.github_service = SimpleNamespace(

@@ -3,10 +3,14 @@ import os
 import sys
 import time
 import unittest
+from unittest.mock import AsyncMock, patch
+
+import dns.rcode
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 from src.services.domain_checker import DomainChecker
+from src.services.dns_service import DNSService
 
 
 class DummyDNSService:
@@ -102,6 +106,11 @@ class DummyDNSServiceUnavailable:
         return []
 
 
+class DummyDNSServiceNXDOMAIN(DummyDNSServiceUnavailable):
+    async def classify_domain_resolution(self, domain: str):
+        return "nxdomain"
+
+
 class DummyDNSServiceConcurrentPrimary:
     async def query_a_record(self, domain: str, use_edns_china: bool = True):
         await asyncio.sleep(0.05)
@@ -153,6 +162,14 @@ class TestDomainChecker(unittest.IsolatedAsyncioTestCase):
         self.assertIn("error", result)
         self.assertFalse(checker.should_reject(result))
 
+    async def test_confirmed_nxdomain_is_terminal_without_foreign_verdict(self):
+        checker = DomainChecker(DummyDNSServiceNXDOMAIN(), DummyGeoIPServiceNoChina())
+        result = await checker.check_domain_comprehensive("does-not-exist.example")
+
+        self.assertEqual(result["lookup_status"], "nxdomain")
+        self.assertEqual(result["error_code"], "nxdomain")
+        self.assertFalse(checker.should_reject(result))
+
     async def test_primary_a_and_ns_queries_run_concurrently(self):
         checker = DomainChecker(DummyDNSServiceConcurrentPrimary(), DummyGeoIPService())
 
@@ -162,6 +179,39 @@ class TestDomainChecker(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["lookup_status"], "ok")
         self.assertLess(duration, 0.09)
+
+
+class TestDNSResolutionClassification(unittest.IsolatedAsyncioTestCase):
+    async def classify(self, doh_statuses, system_status):
+        service = DNSService(
+            {f"resolver-{index}": f"https://resolver-{index}.example/dns-query"
+             for index in range(len(doh_statuses))}
+        )
+        service.start = AsyncMock()
+        service._build_dns_query = lambda *_args, **_kwargs: b"query"
+        service._perform_doh_rcode_query = AsyncMock(side_effect=doh_statuses)
+        with patch.object(
+            service,
+            "_query_system_dns_status_sync",
+            return_value=system_status,
+        ):
+            return await service.classify_domain_resolution("example.com")
+
+    async def test_two_independent_nxdomain_answers_are_terminal(self):
+        status = await self.classify(
+            [dns.rcode.NXDOMAIN, dns.rcode.NXDOMAIN], None
+        )
+        self.assertEqual(status, "nxdomain")
+
+    async def test_noerror_answer_wins_over_negative_answers(self):
+        status = await self.classify(
+            [dns.rcode.NXDOMAIN, dns.rcode.NOERROR], dns.rcode.NXDOMAIN
+        )
+        self.assertEqual(status, "exists")
+
+    async def test_one_negative_answer_is_not_enough_for_terminal_result(self):
+        status = await self.classify([dns.rcode.NXDOMAIN, None], None)
+        self.assertEqual(status, "unknown")
 
 
 if __name__ == '__main__':

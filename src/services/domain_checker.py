@@ -181,9 +181,23 @@ class DomainChecker:
                 + result["ns_ips"]
             )
             if not observed_ips:
-                result["lookup_status"] = "unknown"
-                result["error"] = "暂时无法获取有效的 DNS 地址数据，请稍后重试"
-                result["recommendation"] = "⚠️ 当前无法可靠判断域名归属，请稍后重试"
+                classify = getattr(
+                    self.dns_service, "classify_domain_resolution", None
+                )
+                resolution_status = (
+                    await classify(second_level or normalized_domain)
+                    if classify is not None
+                    else "unknown"
+                )
+                if resolution_status == "nxdomain":
+                    result["lookup_status"] = "nxdomain"
+                    result["error_code"] = "nxdomain"
+                    result["error"] = "域名不存在"
+                    result["recommendation"] = "⚠️ 域名不存在，无法加入规则"
+                else:
+                    result["lookup_status"] = "unknown"
+                    result["error"] = "暂时无法获取有效的 DNS 地址数据，请稍后重试"
+                    result["recommendation"] = "⚠️ 当前无法可靠判断域名归属，请稍后重试"
                 return result
 
             result["lookup_status"] = "ok"

@@ -200,6 +200,7 @@ class HandlerManager:
                 return {
                     "success": False,
                     "action": "error",
+                    "error_code": check_result.get("error_code", ""),
                     "message": "域名检查暂时无法完成"
                 }
             
@@ -325,6 +326,8 @@ class HandlerManager:
             return {"status": "rejected_policy", "domain": domain}
         if result.get("rate_limited"):
             return {"status": "rate_limited", "domain": domain}
+        if result.get("error_code") == "nxdomain":
+            return {"status": "invalid_domain", "domain": domain}
         return {"status": "temporary_error", "domain": domain}
     
     def set_user_state(self, user_id: int, state: str, data: Dict[str, Any] = None):

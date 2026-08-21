@@ -7,7 +7,7 @@ import aiohttp
 import asyncio
 import base64
 import time
-from typing import List, Optional, Dict
+from typing import Dict, List, Literal, Optional
 import dns.edns
 import dns.message
 import dns.rcode
@@ -258,6 +258,47 @@ class DNSService:
             )
             return []
 
+    async def classify_domain_resolution(
+        self, domain: str
+    ) -> Literal["exists", "nxdomain", "unknown"]:
+        """Distinguish a confirmed NXDOMAIN from a temporary resolver failure.
+
+        The regular record helpers intentionally collapse empty answers and
+        resolver failures to an empty list.  That is safe for location policy,
+        but callers also need a terminal answer for names that multiple
+        independent resolvers agree do not exist.
+        """
+        if not self.session or self.session.closed:
+            await self.start()
+
+        query_data = self._build_dns_query(domain, False)
+        if not query_data:
+            return "unknown"
+
+        tasks = [
+            asyncio.create_task(
+                self._perform_doh_rcode_query(server_url, query_data)
+            )
+            for server_url in self.doh_servers.values()
+        ]
+        tasks.append(
+            asyncio.create_task(
+                asyncio.to_thread(self._query_system_dns_status_sync, domain)
+            )
+        )
+        statuses = await asyncio.gather(*tasks, return_exceptions=True)
+
+        rcodes = [status for status in statuses if isinstance(status, int)]
+        if dns.rcode.NOERROR in rcodes:
+            return "exists"
+        if rcodes.count(dns.rcode.NXDOMAIN) >= 2:
+            logger.info(
+                "多个独立解析器确认域名不存在，domain_ref={}",
+                log_reference(domain),
+            )
+            return "nxdomain"
+        return "unknown"
+
     @staticmethod
     def _query_ns_system_dns_sync(domain: str) -> List[str]:
         """Run the blocking system resolver outside the event loop."""
@@ -334,6 +375,50 @@ class DNSService:
         
         # 所有重试失败后抛出异常，以便外层捕捉
         raise Exception(f"{server_name} query failed after retries")
+
+    async def _perform_doh_rcode_query(
+        self, server_url: str, query_data: bytes
+    ) -> Optional[int]:
+        """Return a DNS response code without treating NXDOMAIN as transport failure."""
+        for attempt in range(2):
+            try:
+                async with self._semaphore:
+                    encoded_query = base64.urlsafe_b64encode(query_data).decode().rstrip("=")
+                    async with self.session.get(
+                        f"{server_url}?dns={encoded_query}",
+                        headers={
+                            "Accept": "application/dns-message",
+                            "User-Agent": "Rule-Bot DNS Client/1.0",
+                        },
+                    ) as response:
+                        if response.status == 200:
+                            message = dns.message.from_wire(await response.read())
+                            return message.rcode()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            if attempt == 0:
+                await asyncio.sleep(0.5)
+        return None
+
+    @staticmethod
+    def _query_system_dns_status_sync(domain: str) -> Optional[int]:
+        """Return the system resolver's DNS status without exposing the name."""
+        import dns.resolver
+
+        resolver = dns.resolver.Resolver()
+        resolver.timeout = 3
+        resolver.lifetime = 6
+        try:
+            resolver.resolve(domain, dns.rdatatype.A, raise_on_no_answer=False)
+            return dns.rcode.NOERROR
+        except dns.resolver.NXDOMAIN:
+            return dns.rcode.NXDOMAIN
+        except dns.resolver.NoAnswer:
+            return dns.rcode.NOERROR
+        except Exception:
+            return None
     
     def _parse_dns_response_a(self, response_data: bytes) -> List[str]:
         """解析 DNS 响应中的 A 记录"""

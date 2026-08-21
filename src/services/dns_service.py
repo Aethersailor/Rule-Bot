@@ -416,8 +416,11 @@ class DNSService:
                             return message.rcode(), answer_count
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                pass
+            except Exception as error:
+                logger.debug(
+                    "DoH DNS 状态查询失败，error_type={}",
+                    type(error).__name__,
+                )
             if attempt == 0:
                 await asyncio.sleep(0.5)
         return None

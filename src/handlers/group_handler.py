@@ -145,9 +145,11 @@ class GroupHandler:
             if not is_mentioned:
                 return
             
-            logger.info(f"[群组处理器] 收到@消息 - 群组: {chat.id}, "
-                       f"用户: {user.id}(@{user.username}), "
-                       f"消息: {message.text[:50]}...")
+            logger.info(
+                "[群组处理器] 收到@消息: group_ref={}, user_ref={}",
+                log_reference(str(chat.id)),
+                log_reference(str(user.id)),
+            )
             
             # 提取域名
             domain = await self._extract_domain_from_message(message)

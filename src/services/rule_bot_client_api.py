@@ -3,7 +3,6 @@
 import hmac
 import ssl
 import time
-from collections import defaultdict
 from dataclasses import dataclass
 from typing import Optional
 
@@ -26,11 +25,15 @@ class ListenerConfig:
 class RuleBotClientAPIServer:
     """Run the private and community listeners without exposing discovery routes."""
 
+    MAX_REQUEST_HISTORY_SUBJECTS = 4096
+    REQUEST_HISTORY_CLEANUP_INTERVAL = 600
+
     def __init__(self, config, handler_manager):
         self.config = config
         self.handler_manager = handler_manager
         self._runners: list[web.AppRunner] = []
-        self._request_history: dict[tuple[str, str | int], list[float]] = defaultdict(list)
+        self._request_history: dict[tuple[str, str | int], list[float]] = {}
+        self._last_request_history_cleanup = 0.0
 
     async def start(self) -> None:
         listeners = []
@@ -213,15 +216,41 @@ class RuleBotClientAPIServer:
         self, source: str, subject: str | int, limit: int
     ) -> bool:
         key = (source, subject)
-        now = time.time()
+        now = time.monotonic()
+        self._cleanup_request_history(now)
         cutoff = now - 3600
-        history = [timestamp for timestamp in self._request_history[key] if timestamp > cutoff]
+        history = [
+            timestamp
+            for timestamp in self._request_history.get(key, [])
+            if timestamp > cutoff
+        ]
+        if key not in self._request_history:
+            if len(self._request_history) >= self.MAX_REQUEST_HISTORY_SUBJECTS:
+                self._cleanup_request_history(now, force=True)
+            if len(self._request_history) >= self.MAX_REQUEST_HISTORY_SUBJECTS:
+                return False
         if len(history) >= limit:
             self._request_history[key] = history
             return False
         history.append(now)
         self._request_history[key] = history
         return True
+
+    def _cleanup_request_history(self, now: float, *, force: bool = False) -> None:
+        if (
+            not force
+            and now - self._last_request_history_cleanup
+            < self.REQUEST_HISTORY_CLEANUP_INTERVAL
+        ):
+            return
+        cutoff = now - 3600
+        for key, timestamps in list(self._request_history.items()):
+            current = [timestamp for timestamp in timestamps if timestamp > cutoff]
+            if current:
+                self._request_history[key] = current
+            else:
+                self._request_history.pop(key, None)
+        self._last_request_history_cleanup = now
 
     @staticmethod
     def _json_response(status: str, http_status: int) -> web.Response:

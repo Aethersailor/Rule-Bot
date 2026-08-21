@@ -10,7 +10,7 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/aethersailor/rule-bot)](https://hub.docker.com/r/aethersailor/rule-bot)
 [![License](https://img.shields.io/github/license/Aethersailor/Rule-Bot)](LICENSE)
 
-[🚀 直接使用](https://t.me/asailor_rulebot) · [🔌 客户端](https://github.com/Aethersailor/Rule-Bot-Client) · [📚 使用文档](https://github.com/Aethersailor/Rule-Bot/wiki) · [🐳 Docker Hub](https://hub.docker.com/r/aethersailor/rule-bot) · [📦 GHCR](https://github.com/Aethersailor/Rule-Bot/pkgs/container/rule-bot) · [🔐 隐私说明](PRIVACY.md)
+[🚀 直接使用](https://t.me/asailor_rulebot) · [🔌 客户端](https://github.com/Aethersailor/Rule-Bot-Client) · [📚 使用文档](https://github.com/Aethersailor/Rule-Bot/wiki) · [🐳 Docker Hub](https://hub.docker.com/r/aethersailor/rule-bot) · [📦 GHCR](https://github.com/Aethersailor/Rule-Bot/pkgs/container/rule-bot) · [🔐 隐私说明](PRIVACY.md) · [🛡️ 安全策略](SECURITY.md)
 
 </div>
 
@@ -161,7 +161,8 @@ docker compose logs -f rule-bot
 | 🛠️ [部署与故障排查](https://github.com/Aethersailor/Rule-Bot/wiki/部署与故障排查) | 第一次部署、更新容器或处理启动问题 |
 | ⚙️ [配置说明](https://github.com/Aethersailor/Rule-Bot/wiki/配置说明) | 启用群组验证、群聊、管理员、播报或调整数据源 |
 | 🔌 [Rule-Bot Client 接入](https://github.com/Aethersailor/Rule-Bot/wiki/Rule-Bot-Client-接入) | 接入私用或社区客户端入口 |
-| 🔐 [隐私说明](PRIVACY.md) | 了解社区 Token、网络元数据、数据保留和用户控制 |
+| 🔐 [隐私说明](PRIVACY.md) | 了解 Telegram、Client API、网络元数据、公开提交和数据保留 |
+| 🛡️ [安全策略](SECURITY.md) | 私密报告安全或隐私边界问题 |
 
 ## ⚠️ 使用限制
 

@@ -10,7 +10,7 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/aethersailor/rule-bot)](https://hub.docker.com/r/aethersailor/rule-bot)
 [![License](https://img.shields.io/github/license/Aethersailor/Rule-Bot)](LICENSE)
 
-[🚀 直接使用](https://t.me/asailor_rulebot) · [📚 使用文档](https://github.com/Aethersailor/Rule-Bot/wiki) · [🐳 Docker Hub](https://hub.docker.com/r/aethersailor/rule-bot) · [📦 GHCR](https://github.com/Aethersailor/Rule-Bot/pkgs/container/rule-bot) · [🔐 隐私说明](PRIVACY.md)
+[🚀 直接使用](https://t.me/asailor_rulebot) · [🔌 客户端](https://github.com/Aethersailor/Rule-Bot-Client) · [📚 使用文档](https://github.com/Aethersailor/Rule-Bot/wiki) · [🐳 Docker Hub](https://hub.docker.com/r/aethersailor/rule-bot) · [📦 GHCR](https://github.com/Aethersailor/Rule-Bot/pkgs/container/rule-bot) · [🔐 隐私说明](PRIVACY.md)
 
 </div>
 
@@ -43,6 +43,26 @@ Rule-Bot 把域名查询、网络信息检查、人工确认和 GitHub 提交放
 
 > [!NOTE]
 > 当前只管理直连规则。代理规则添加和规则删除尚未开放。
+
+## 🔌 使用 Rule-Bot Client 自动发现域名
+
+[Rule-Bot Client](https://github.com/Aethersailor/Rule-Bot-Client) 是可选的配套客户端。它连接一个或多个 Mihomo 控制接口，读取日志和当前连接，筛选最终由兜底规则 `MATCH` 处理的域名，再把去重结果保存到本地清单。需要时，还可以把新域名发送给 Rule-Bot，由服务端检查重复规则、GeoSite 覆盖和直连策略，并把通过检查的域名写入目标 GitHub 规则仓库。
+
+> [!IMPORTANT]
+> Rule-Bot Client 不是代理客户端，不会修改 Mihomo 配置。Rule-Bot 发送功能默认关闭；只使用本地收集时，域名不会发送给 Rule-Bot。
+
+| 使用环境 | 客户端提供的方式 |
+| --- | --- |
+| Linux 或 NAS | Docker Compose、Debian 或 Ubuntu 软件包、原生二进制 |
+| OpenWrt | 带 LuCI 管理页面的 IPK 或 APK 软件包，可自动发现本机 OpenClash 或 Nikki |
+| 多个 Mihomo 实例 | 一个客户端可以连接多个控制接口并统一去重，无需为每个实例分别部署 |
+
+开始使用：
+
+- [下载最新版本](https://github.com/Aethersailor/Rule-Bot-Client/releases/latest)
+- [阅读 Rule-Bot Client 用户文档](https://github.com/Aethersailor/Rule-Bot-Client/wiki)
+- [配置 Rule-Bot 服务端接入](https://github.com/Aethersailor/Rule-Bot/wiki/Rule-Bot-Client-接入)
+- [了解客户端隐私边界](https://github.com/Aethersailor/Rule-Bot-Client/blob/master/PRIVACY.md)
 
 ## 💬 使用机器人
 

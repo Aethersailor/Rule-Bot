@@ -2,7 +2,7 @@
 
 # 🤖 Rule-Bot
 
-**用 Telegram 查询域名、判断是否适合直连，并把确认后的规则写入 GitHub。**
+**用 Telegram 查询域名、判断是否适合直连，并按入口策略维护 GitHub 规则。**
 
 一个面向 Mihomo / Clash 直连规则仓库的自托管 Telegram 机器人。
 
@@ -16,12 +16,12 @@
 
 ---
 
-Rule-Bot 把域名查询、网络信息检查、人工确认和 GitHub 提交放进一个清晰的聊天流程，减少重复规则和误提交。
+Rule-Bot 把域名查询、网络信息检查、私聊确认、自动入口处理和 GitHub 提交放进一个清晰的流程，减少重复规则和误提交。
 
 > [!IMPORTANT]
 > **Rule-Bot 不是网页应用。** 项目维护的公共实例 [@asailor_rulebot](https://t.me/asailor_rulebot) 面向 [Custom_OpenClash_Rules](https://github.com/Aethersailor/Custom_OpenClash_Rules)，无需自行部署。
 >
-> 公共实例负责查询和维护补充直连规则文件 [`rule/Custom_Direct.list`](https://github.com/Aethersailor/Custom_OpenClash_Rules/blob/main/rule/Custom_Direct.list)。符合条件并经确认的域名会以 `DOMAIN-SUFFIX` 规则写入该文件；维护其他规则仓库或需要独立服务时，再部署自己的实例。
+> 公共实例负责查询和维护补充直连规则文件 [`rule/Custom_Direct.list`](https://github.com/Aethersailor/Custom_OpenClash_Rules/blob/main/rule/Custom_Direct.list)。符合条件的域名会在 Telegram 私聊确认后，或由已授权的自动入口按策略处理后，以 `DOMAIN-SUFFIX` 规则写入该文件。维护其他规则仓库或需要独立服务时，再部署自己的实例。
 
 ## 🧭 选择使用方式
 
@@ -37,7 +37,7 @@ Rule-Bot 把域名查询、网络信息检查、人工确认和 GitHub 提交放
 | --- | --- |
 | 🔎 **查询与去重** | 检查域名是否已存在于目标规则文件或 `GEOSITE:CN` |
 | 🌐 **网络信息判断** | 结合 DNS、NS 和 GeoIP 结果，给出是否适合直连的建议 |
-| ✅ **确认后提交** | 私聊确认后写入 `DOMAIN-SUFFIX` 规则，并返回 GitHub 提交链接 |
+| ✅ **按入口策略提交** | 私聊需要确认；受信任群聊和已授权的 Rule-Bot Client 入口按各自策略自动处理 |
 | 👥 **群组协作** | 在指定群组中响应 `@机器人` 的消息，自动检查并处理域名 |
 | 📣 **可选管理能力** | 验证群成员身份、设置管理员、发送规则更新播报 |
 | 🔌 **客户端接入** | 可选接收 [Rule-Bot Client](https://github.com/Aethersailor/Rule-Bot-Client) 捕获的域名 |
@@ -51,7 +51,7 @@ Rule-Bot 把域名查询、网络信息检查、人工确认和 GitHub 提交放
 [Rule-Bot Client](https://github.com/Aethersailor/Rule-Bot-Client) 是可选的配套客户端。它连接一个或多个 Mihomo 控制接口，读取日志和当前连接，筛选最终由兜底规则 `MATCH` 处理的域名，再把去重结果保存到本地清单。需要时，还可以把新域名发送给 Rule-Bot，由服务端检查重复规则、GeoSite 覆盖和直连策略，并把通过检查的域名写入目标 GitHub 规则仓库。
 
 > [!IMPORTANT]
-> Rule-Bot Client 不是代理客户端，不会修改 Mihomo 配置。Rule-Bot 发送功能默认关闭；只使用本地收集时，域名不会发送给 Rule-Bot。
+> Rule-Bot Client 不是代理客户端，不会修改 Mihomo 配置。Rule-Bot Client 的发送功能默认关闭；只使用本地收集时，域名不会发送给 Rule-Bot。
 
 | 使用环境 | 客户端提供的方式 |
 | --- | --- |
@@ -113,7 +113,7 @@ Rule-Bot 把域名查询、网络信息检查、人工确认和 GitHub 提交放
 
 - 一台已经安装 Docker 和 Docker Compose 的主机；
 - 通过 [@BotFather](https://t.me/BotFather) 创建的 Telegram Bot Token；
-- 能够读写目标规则仓库内容的 GitHub Token；
+- 能够读写目标规则仓库内容的 GitHub Token；建议使用细粒度 Token，只授予目标仓库的 Contents 读写权限；
 - 已经存在的目标仓库和直连规则文件。
 
 ### 2. 下载 Compose 模板
@@ -131,7 +131,7 @@ curl -fsSL -o docker-compose.yml \
 | 配置项 | 示例 | 说明 |
 | --- | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | `123456:replace-me` | [@BotFather](https://t.me/BotFather) 提供的 Bot Token |
-| `GITHUB_TOKEN` | `github_pat_replace_me` | 需要能够读写目标仓库内容 |
+| `GITHUB_TOKEN` | `github_pat_replace_me` | 建议使用细粒度 Token，只授予目标仓库的 Contents 读写权限 |
 | `GITHUB_REPO` | `owner/repository` | 目标 GitHub 仓库 |
 | `DIRECT_RULE_FILE` | `rule/Direct.list` | 相对于仓库根目录的规则文件路径 |
 
@@ -155,6 +155,26 @@ docker compose logs -f rule-bot
 > [!CAUTION]
 > `docker-compose.yml` 中包含 Telegram 和 GitHub 凭据。不要把填写真实 Token 的文件提交到 Git，也不要把完整配置或日志直接发布到 Issue。
 
+## 🐳 镜像与版本渠道
+
+仓库提供两类镜像标签：
+
+| 标签 | 含义 | 适合用途 |
+| --- | --- | --- |
+| `latest` | `master` 每次通过构建后更新的滚动标签，可能领先最新 GitHub Release | 默认 Compose 部署和持续更新 |
+| `X.Y.Z` | 对应 `vX.Y.Z` Git 标签和 GitHub Release 的版本标签 | 版本审计、问题复现和回滚 |
+
+项目的 Compose 模板有意使用 `aethersailor/rule-bot:latest`。更新时执行 `docker compose pull && docker compose up -d`。需要确认正在运行的确切构建时，记录镜像 digest，并查看 OCI 标签 `org.opencontainers.image.revision`；digest 用于标识具体镜像，不要求把常规 Compose 改成固定版本。
+
+- [查看 GitHub Releases](https://github.com/Aethersailor/Rule-Bot/releases)
+- [查看 Docker Hub 标签](https://hub.docker.com/r/aethersailor/rule-bot/tags)
+
+## 🗂️ 目标规则文件
+
+`DIRECT_RULE_FILE` 指向一个已经存在的 UTF-8、逐行文本规则文件。文件可以混合保存注释、`DOMAIN-SUFFIX`、IP、端口和其他规则；Rule-Bot 只检查和新增 `DOMAIN-SUFFIX` 行，不会把其他规则类型当作重复项，也不会主动改写其他行。
+
+新增规则时，Rule-Bot 同时写入来源注释和 `DOMAIN-SUFFIX,example.com`。如果文件中存在标记 `# 以下域名待提交 PR`，新内容插入在第一个标记之后；如果不存在，Rule-Bot 会在文件末尾创建该标记，再追加新内容。
+
 ## 📚 文档导航
 
 | 文档 | 适合什么时候阅读 |
@@ -165,10 +185,11 @@ docker compose logs -f rule-bot
 | 🔌 [Rule-Bot Client 接入](https://github.com/Aethersailor/Rule-Bot/wiki/Rule-Bot-Client-接入) | 接入私用或社区客户端入口 |
 | 🔐 [隐私说明](PRIVACY.md) | 了解 Telegram、Client API、网络元数据、公开提交和数据保留 |
 | 🛡️ [安全策略](SECURITY.md) | 私密报告安全或隐私边界问题 |
+| 📦 [GitHub Releases](https://github.com/Aethersailor/Rule-Bot/releases) | 核对稳定版本、发布时间和变更说明 |
 
 ## ⚠️ 使用限制
 
-- 规则文件必须已经存在，并使用每行一条 `DOMAIN-SUFFIX,example.com` 的文本格式。
+- 规则文件必须已经存在；Rule-Bot 管理其中的 `DOMAIN-SUFFIX,example.com` 行，其他行可以继续由原有维护流程管理。
 - `.cn` 域名按现有策略默认直连，不会重复写入公开规则库。
 - 每个 Telegram 账号每小时最多添加 50 个域名。
 - 管理员可以绕过归属地策略，但不能绕过无效域名、重复规则和 `.cn` 处理。
@@ -176,9 +197,31 @@ docker compose logs -f rule-bot
 
 ## 🔐 安全与隐私
 
-Rule-Bot 会把成功添加的域名公开写入目标 GitHub 仓库及其提交历史。DNS、NS 和 GeoIP 检查也会把待检查域名交给相应服务提供方。
+Rule-Bot 会把成功添加的域名写入目标 GitHub 仓库及其提交历史；目标仓库公开时，这些内容也会公开。DNS、NS 和 GeoIP 检查会把待检查域名交给相应服务提供方。
 
 Rule-Bot Client 入口默认关闭。启用前应阅读 [Wiki 接入说明](https://github.com/Aethersailor/Rule-Bot/wiki/Rule-Bot-Client-接入) 和 [隐私说明](PRIVACY.md)，使用 HTTPS 与 Bearer Token，并把监听端口限制在宿主机回环地址。隐藏 API 路径只能减少扫描噪声，不能代替鉴权。
+
+## 🔗 相关项目与反馈入口
+
+四个项目可以独立使用，也可以组成从规则维护到客户端反馈的流程：
+
+| 项目 | 在流程中的职责 | 与 Rule-Bot 的关系 |
+| --- | --- | --- |
+| [Custom_OpenClash_Rules](https://github.com/Aethersailor/Custom_OpenClash_Rules) | 提供 OpenClash / Mihomo 配置、规则及其使用文档 | 项目公共实例的固定目标仓库 |
+| [SubConverter-Extended](https://github.com/Aethersailor/SubConverter-Extended) | 按需转换订阅和生成客户端配置 | 可选的配置转换工具，不是 Rule-Bot 依赖 |
+| [Rule-Bot](https://github.com/Aethersailor/Rule-Bot) | 检查域名并维护目标 GitHub 规则文件 | 当前项目 |
+| [Rule-Bot Client](https://github.com/Aethersailor/Rule-Bot-Client) | 本地收集 Mihomo `MATCH` 域名，并可选发送给 Rule-Bot | 可选输入端；本地收集不要求部署 Rule-Bot |
+
+请选择与问题对象对应的入口：
+
+| 问题或需求 | 入口 |
+| --- | --- |
+| 查询或添加少量公共直连域名 | [@asailor_rulebot](https://t.me/asailor_rulebot) |
+| Rule-Bot 部署、Telegram 流程或 Client API 缺陷 | [提交 Rule-Bot Bug](https://github.com/Aethersailor/Rule-Bot/issues/new?template=bug_report.yml) |
+| 本地收集、Mihomo 连接或客户端投递问题 | [Rule-Bot Client Issues](https://github.com/Aethersailor/Rule-Bot-Client/issues) |
+| 规则内容、派生文件、CDN 或 OpenClash 使用问题 | [Custom_OpenClash_Rules Issues](https://github.com/Aethersailor/Custom_OpenClash_Rules/issues) |
+| 订阅转换或生成配置问题 | [SubConverter-Extended Issues](https://github.com/Aethersailor/SubConverter-Extended/issues) |
+| 安全漏洞或隐私边界问题 | [私密报告安全漏洞](https://github.com/Aethersailor/Rule-Bot/security/advisories/new) |
 
 ## 🌱 社区与许可
 
@@ -192,6 +235,6 @@ Rule-Bot Client 入口默认关闭。启用前应阅读 [Wiki 接入说明](http
 
 <div align="center">
 
-如果 Rule-Bot 对你有帮助，欢迎通过 Issue 提交建议，或将它分享给同样维护规则仓库的人。
+如果 Rule-Bot 对你有帮助，欢迎通过对应项目的 Issue 提交建议，或将它分享给同样维护规则仓库的人。
 
 </div>

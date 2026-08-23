@@ -1,0 +1,17 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 私密报告安全漏洞
+    url: https://github.com/Aethersailor/Rule-Bot/security/advisories/new
+    about: 报告安全漏洞、凭据暴露风险或隐私边界问题。
+  - name: 查询或添加公共直连域名
+    url: https://t.me/asailor_rulebot
+    about: 直接使用项目维护的公共 Telegram 实例。
+  - name: Rule-Bot Client 问题
+    url: https://github.com/Aethersailor/Rule-Bot-Client/issues
+    about: 报告本地收集、Mihomo 连接或客户端投递问题。
+  - name: Custom_OpenClash_Rules 问题
+    url: https://github.com/Aethersailor/Custom_OpenClash_Rules/issues
+    about: 报告规则内容、派生文件、CDN 或 OpenClash 使用问题。
+  - name: 阅读部署与故障排查
+    url: https://github.com/Aethersailor/Rule-Bot/wiki/部署与故障排查
+    about: 查找部署步骤、成功标志和常见故障处理方法。

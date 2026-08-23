@@ -1,0 +1,70 @@
+name: Sync Docker Hub Description
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/DOCKERHUB_DESCRIPTION.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-dockerhub-description
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    if: github.repository == 'Aethersailor/Rule-Bot'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Update Docker Hub repository description
+        shell: bash
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          SHORT_DESCRIPTION: Rule-Bot：通过 Telegram 与 Rule-Bot Client 维护 GitHub 直连规则
+        run: |
+          set -euo pipefail
+          description_file='.github/DOCKERHUB_DESCRIPTION.md'
+          test -s "$description_file"
+
+          login_payload="$(jq -n \
+            --arg username "$DOCKERHUB_USERNAME" \
+            --arg password "$DOCKERHUB_TOKEN" \
+            '{username: $username, password: $password}')"
+          jwt="$(curl --fail --silent --show-error \
+            -H 'Content-Type: application/json' \
+            --data "$login_payload" \
+            https://hub.docker.com/v2/users/login/ \
+            | jq -er '.token // .access_token')"
+          unset login_payload
+
+          payload_file="$(mktemp)"
+          trap 'rm -f "$payload_file"' EXIT
+          jq -n \
+            --arg description "$SHORT_DESCRIPTION" \
+            --rawfile full_description "$description_file" \
+            '{description: $description, full_description: $full_description}' \
+            >"$payload_file"
+
+          curl --fail --silent --show-error \
+            -X PATCH \
+            -H "Authorization: JWT $jwt" \
+            -H 'Content-Type: application/json' \
+            --data-binary "@$payload_file" \
+            https://hub.docker.com/v2/repositories/aethersailor/rule-bot/ \
+            >/dev/null
+          unset jwt
+
+          current="$(curl --fail --silent --show-error \
+            https://hub.docker.com/v2/namespaces/aethersailor/repositories/rule-bot)"
+          jq -e \
+            --arg description "$SHORT_DESCRIPTION" \
+            --rawfile full_description "$description_file" \
+            '.description == $description and .full_description == $full_description' \
+            <<<"$current" >/dev/null

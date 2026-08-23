@@ -1,0 +1,139 @@
+name: 报告 Rule-Bot 缺陷
+description: 报告可复现的 Telegram、GitHub、Client API、容器或文档问题
+title: "[Bug] "
+labels: []
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。此表单只用于 Rule-Bot 服务端和文档问题。
+
+        - 安全漏洞或隐私边界问题请使用[私密漏洞报告](https://github.com/Aethersailor/Rule-Bot/security/advisories/new)，不要创建公开 Issue。
+        - Rule-Bot Client、本地 Mihomo 连接或投递队列问题请提交到 [Rule-Bot-Client](https://github.com/Aethersailor/Rule-Bot-Client/issues)。
+        - 规则内容、派生文件、CDN 或 OpenClash 使用问题请提交到 [Custom_OpenClash_Rules](https://github.com/Aethersailor/Custom_OpenClash_Rules/issues)。
+
+        提交前，请移除 Token、签名密钥、隐藏 API 路径、用户和群组 ID、未脱敏域名、IP 地址、私有仓库信息及内部网络地址。
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 我已经搜索现有 Issue，没有找到相同问题。
+          required: true
+        - label: 我确认此问题不需要按安全漏洞或隐私边界问题私密报告。
+          required: true
+        - label: 我已经移除凭据、隐藏路径和其他敏感信息。
+          required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 受影响的功能
+      description: 选择最接近问题的位置。
+      options:
+        - Telegram 私聊
+        - Telegram 群聊或群成员验证
+        - GitHub 规则读取或写入
+        - Rule-Bot Client 私用 API
+        - Rule-Bot Client Community API 或 Token
+        - 容器启动、健康检查或更新
+        - 配置或用户文档
+        - 其他 Rule-Bot 服务端功能
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本或镜像身份
+      description: 提供 Release 版本、完整镜像 digest 或 OCI revision。仅写 `latest` 不足以定位构建。
+      placeholder: "例如：vX.Y.Z、sha256:... 或完整 revision"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: channel
+    attributes:
+      label: 使用渠道
+      options:
+        - Docker `latest`（滚动 `master`）
+        - Docker `X.Y.Z` 版本标签
+        - GitHub Release 源码
+        - 自行修改或本地构建
+        - 项目公共实例
+        - 不适用（文档问题）
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: 部署方式
+      options:
+        - 仓库提供的 Docker Compose
+        - 自定义 Docker Compose
+        - Docker CLI
+        - 直接运行 Python
+        - 项目公共实例
+        - 不适用（文档问题）
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际表现
+      description: 说明发生了什么，并写出可见的状态、响应或错误。不要只写“不能用”。
+      placeholder: 描述现象、影响范围和出现频率。
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期表现
+      description: 说明预期 Rule-Bot 执行什么操作或返回什么结果。
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤
+      description: 从已知初始状态开始，按顺序列出最少步骤。域名和仓库可以使用安全占位符。
+      placeholder: |
+        1. 使用已脱敏配置启动容器。
+        2. 执行……
+        3. 观察到……
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 已脱敏诊断信息
+      description: 提供相关日志片段、HTTP 状态与业务状态、容器状态，以及问题发生时间。不要粘贴完整日志或完整 `docker compose config`。
+      render: shell
+
+  - type: textarea
+    id: configuration
+    attributes:
+      label: 配置摘要
+      description: 只列出与问题相关的配置项名称、是否启用和非敏感值。Token、密钥和隐藏 API 路径请写成 `<redacted>`。
+      render: yaml
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: 其他信息
+      description: 可补充已尝试的排查、规则文件示例或相关链接。请继续使用占位域名和脱敏数据。
+
+  - type: checkboxes
+    id: final_check
+    attributes:
+      label: 最终确认
+      options:
+        - label: 我没有粘贴 Telegram Token、GitHub Token、Client Token、签名密钥、隐藏 API 路径或完整配置。
+          required: true

@@ -20,7 +20,7 @@ services:
       # Telegram Bot Token (从 @BotFather 获取)
       - TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 
-      # GitHub Personal Access Token (需要 repo 权限)
+      # GitHub Token（建议使用 Fine-grained PAT，仅授予目标仓库 Contents: Read and write）
       - GITHUB_TOKEN=your_github_token_here
 
       # GitHub Repository (格式: 用户名/仓库名)
@@ -72,9 +72,9 @@ services:
       # Bot 必须已加入目标群组并拥有发言权限；发送失败不影响私聊添加结果
       # - ANNOUNCEMENT_GROUP_ID=-1001234567890
 
-      # 管理员配置 (可选: 指定管理员用户 ID，拥有强制添加域名的权限)
+      # 管理员配置 (可选: 指定管理员用户 ID)
       # 支持逗号分隔多个 Telegram 用户 ID，例如：123456789,987654321
-      # 管理员可以强制添加被系统检测拒绝的域名
+      # 管理员只能跳过归属地策略拒绝；不能绕过无效域名、重复规则和 .cn 处理
       # 留空则关闭此功能
       # - ADMIN_USER_IDS=123456789,987654321
 

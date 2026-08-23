@@ -351,7 +351,7 @@ class TestRuleBotClientSubmission(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"status": "exists_rules", "domain": "example.com"})
         manager.check_and_add_domain_auto.assert_awaited_once_with(
             "example.com",
-            "Rule-Bot Client Community",
+            "Rule-Bot Client",
             user_id=("rule_bot_client_community", 42),
             source="rule_bot_client_community",
             max_adds=50,
@@ -493,7 +493,7 @@ class TestRuleBotClientCommitIdentity(unittest.IsolatedAsyncioTestCase):
         self.assertIn("# add by Rule-Bot Client / Date:", update_args[2])
         self.assertIn("DOMAIN-SUFFIX,example.com", update_args[2])
 
-    async def test_community_submission_has_anonymous_source_identity(self):
+    async def test_community_submission_uses_generic_rule_bot_client_identity(self):
         service = GitHubService.__new__(GitHubService)
         service.config = SimpleNamespace(
             DIRECT_RULE_FILE="rules.list",
@@ -522,9 +522,10 @@ class TestRuleBotClientCommitIdentity(unittest.IsolatedAsyncioTestCase):
         update_args = service.repo.update_file.call_args.args
         self.assertEqual(
             update_args[1],
-            "feat(rules): add direct domain example.net by Rule-Bot (from Rule-Bot Client Community)",
+            "feat(rules): add direct domain example.net by Rule-Bot (from Rule-Bot Client)",
         )
-        self.assertIn("# add by Rule-Bot Client Community / Date:", update_args[2])
+        self.assertIn("# add by Rule-Bot Client / Date:", update_args[2])
+        self.assertNotIn("Rule-Bot Client Community", update_args[2])
         self.assertNotRegex(
             update_args[2],
             r"(?:user|Admin):\s*42\b",

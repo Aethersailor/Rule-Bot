@@ -375,10 +375,11 @@ class GitHubService:
                             comment = f"# {description} / force add by Admin: {user_name} / Date: {current_date}"
                         else:
                             comment = f"# force add by Admin: {user_name} / Date: {current_date}"
-                    elif source == "rule_bot_client_private":
+                    elif source in {
+                        "rule_bot_client_private",
+                        "rule_bot_client_community",
+                    }:
                         comment = f"# add by Rule-Bot Client / Date: {current_date}"
-                    elif source == "rule_bot_client_community":
-                        comment = f"# add by Rule-Bot Client Community / Date: {current_date}"
                     else:
                         if description:
                             comment = f"# {description} / add by Telegram user: {user_name} / Date: {current_date}"
@@ -400,15 +401,13 @@ class GitHubService:
                             f"feat(rules): force add direct domain {domain} by Admin "
                             f"(Telegram user: {user_name})"
                         )
-                    elif source == "rule_bot_client_private":
+                    elif source in {
+                        "rule_bot_client_private",
+                        "rule_bot_client_community",
+                    }:
                         commit_title = (
                             f"feat(rules): add direct domain {domain} by Rule-Bot "
                             "(from Rule-Bot Client)"
-                        )
-                    elif source == "rule_bot_client_community":
-                        commit_title = (
-                            f"feat(rules): add direct domain {domain} by Rule-Bot "
-                            "(from Rule-Bot Client Community)"
                         )
                     else:
                         commit_title = f"feat(rules): add direct domain {domain} by Telegram Bot (Telegram user: {user_name})"

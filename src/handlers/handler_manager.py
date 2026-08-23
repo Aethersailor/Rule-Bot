@@ -304,7 +304,7 @@ class HandlerManager:
 
         result = await self.check_and_add_domain_auto(
             domain,
-            "Rule-Bot Client Community" if source == "rule_bot_client_community" else "Rule-Bot Client",
+            "Rule-Bot Client",
             user_id=rate_key,
             source=source,
             max_adds=max_adds,

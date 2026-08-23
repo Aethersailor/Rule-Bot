@@ -19,13 +19,15 @@
 Rule-Bot 把域名查询、网络信息检查、人工确认和 GitHub 提交放进一个清晰的聊天流程，减少重复规则和误提交。
 
 > [!IMPORTANT]
-> **Rule-Bot 不是网页应用。** [Custom_OpenClash_Rules](https://github.com/Aethersailor/Custom_OpenClash_Rules) 用户可以直接打开配套机器人 [@asailor_rulebot](https://t.me/asailor_rulebot)；维护其他规则仓库或需要独立服务时，再部署自己的实例。
+> **Rule-Bot 不是网页应用。** 项目维护的公共实例 [@asailor_rulebot](https://t.me/asailor_rulebot) 面向 [Custom_OpenClash_Rules](https://github.com/Aethersailor/Custom_OpenClash_Rules)，无需自行部署。
+>
+> 公共实例负责查询和维护补充直连规则文件 [`rule/Custom_Direct.list`](https://github.com/Aethersailor/Custom_OpenClash_Rules/blob/main/rule/Custom_Direct.list)。符合条件并经确认的域名会以 `DOMAIN-SUFFIX` 规则写入该文件；维护其他规则仓库或需要独立服务时，再部署自己的实例。
 
 ## 🧭 选择使用方式
 
-| | 直接使用配套机器人 | 部署自己的实例 |
+| | 直接使用公共实例 | 部署自己的实例 |
 | --- | --- | --- |
-| **适合场景** | 为 `Custom_OpenClash_Rules` 查询或添加直连域名 | 维护其他规则仓库，或需要独立配置与权限 |
+| **适合场景** | 查询或维护 `Custom_OpenClash_Rules` 的补充直连规则 | 维护其他规则仓库，或需要独立配置与权限 |
 | **需要准备** | Telegram | Docker 主机、Telegram Bot Token、GitHub Token |
 | **开始方式** | 打开 [@asailor_rulebot](https://t.me/asailor_rulebot)，发送 `/start` | 阅读 [快速部署](#quick-deploy) 或 [Wiki 部署指南](https://github.com/Aethersailor/Rule-Bot/wiki/部署与故障排查) |
 
@@ -182,7 +184,7 @@ Rule-Bot Client 入口默认关闭。启用前应阅读 [Wiki 接入说明](http
 
 | 入口 | 链接 |
 | --- | --- |
-| 🤖 配套机器人 | [@asailor_rulebot](https://t.me/asailor_rulebot) |
+| 🤖 公共实例 | [@asailor_rulebot](https://t.me/asailor_rulebot) |
 | 💬 交流群 | [Custom OpenClash Rules 交流群](https://t.me/custom_openclash_rules_group) |
 | 📄 开源许可 | [GNU Affero General Public License v3.0](LICENSE) |
 

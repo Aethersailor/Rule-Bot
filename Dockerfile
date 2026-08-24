@@ -57,7 +57,7 @@ RUN addgroup -g 1000 appuser && \
 
 # 只读挂载构建阶段的 wheel，不把临时 wheelhouse 写入运行镜像层。
 RUN --mount=type=bind,from=builder,source=/wheels,target=/wheels \
-    pip install --no-cache-dir /wheels/*
+    pip install --no-cache-dir --no-compile /wheels/*
 
 # 复制应用代码
 COPY --chown=appuser:appuser src/ ./src/

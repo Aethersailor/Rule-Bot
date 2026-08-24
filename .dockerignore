@@ -6,6 +6,7 @@
 # 文档
 README.md
 *.md
+LICENSE
 
 # 开发环境
 .vscode
@@ -67,6 +68,12 @@ build/
 .env
 .env.local
 .env.*.local
+
+# 运行与开发入口（镜像只需要 requirements.txt 和 src/）
+docker-compose.yml
+requirements-dev.txt
+ruff.toml
+start.sh
 
 # 其他
 node_modules/

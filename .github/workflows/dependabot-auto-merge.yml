@@ -49,9 +49,6 @@ jobs:
           gh label create "$automerge_label" --repo "$REPOSITORY" --force \
             --color "0e8a16" \
             --description "Minor or patch Dependabot update eligible for automatic merge"
-          gh label create "$rebase_label" --repo "$REPOSITORY" --force \
-            --color "fbca04" \
-            --description "Eligible Dependabot update waiting for a current master base"
           gh label create "$manual_label" --repo "$REPOSITORY" --force \
             --color "d93f0b" \
             --description "Dependabot update requires manual review"
@@ -69,33 +66,6 @@ jobs:
                   --remove-label "$label" >/dev/null 2>&1 || true
               fi
             done
-          }
-
-          request_dependabot_command() {
-            local pull_number="$1"
-            local command="$2"
-            local marker="$3"
-            local cutoff="$4"
-            local body
-            local comments
-
-            comments=$(gh api --paginate --slurp \
-              "repos/$REPOSITORY/issues/$pull_number/comments?per_page=100" | jq 'add')
-            if jq -e \
-              --arg marker "$marker" \
-              --arg cutoff "$cutoff" '
-                any(.[];
-                  (.body | contains($marker))
-                  and .created_at >= $cutoff
-                )
-              ' <<<"$comments" >/dev/null; then
-              echo "Dependabot command already requested recently for PR #$pull_number"
-              return
-            fi
-
-            body=$(printf '@%s\n\n%s\n' "$command" "$marker")
-            gh pr comment "$pull_number" --repo "$REPOSITORY" \
-              --body "$body" >/dev/null
           }
 
           rerun_gate() {
@@ -166,7 +136,6 @@ jobs:
             pull=$(gh api "repos/$REPOSITORY/pulls/$pull_number")
             author=$(jq -r '.user.login' <<<"$pull")
             base_ref=$(jq -r '.base.ref' <<<"$pull")
-            base_sha=$(jq -r '.base.sha' <<<"$pull")
             head_ref=$(jq -r '.head.ref' <<<"$pull")
             head_repo=$(jq -r '.head.repo.full_name // ""' <<<"$pull")
             head_sha=$(jq -r '.head.sha' <<<"$pull")
@@ -208,12 +177,9 @@ jobs:
                 | last // null
               ' <<<"$runs")
             if [[ "$policy_run" == null ]]; then
-              cutoff=$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ)
-              marker="<!-- rule-bot-automerge-recreate:$head_sha -->"
-              request_dependabot_command "$pull_number" \
-                'dependabot recreate' "$marker" "$cutoff"
-              echo "Requested fresh policy evidence for PR #$pull_number"
-              exit 0
+              set_policy_label "$pull_number" "$manual_label"
+              echo "PR #$pull_number has no exact-head policy run for $head_sha"
+              continue
             fi
 
             policy_run_id=$(jq -r '.id' <<<"$policy_run")
@@ -289,15 +255,6 @@ jobs:
               continue
             fi
 
-            if [[ "$base_sha" != "$default_sha" ]]; then
-              set_policy_label "$pull_number" "$rebase_label"
-              cutoff=$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)
-              marker="<!-- rule-bot-automerge-rebase:$head_sha:$default_sha -->"
-              request_dependabot_command "$pull_number" \
-                'dependabot rebase' "$marker" "$cutoff"
-              echo "PR #$pull_number must be rebased from $base_sha onto $default_sha"
-              exit 0
-            fi
             set_policy_label "$pull_number" "$automerge_label"
 
             gates_ok=true
@@ -381,13 +338,8 @@ jobs:
             latest=$(gh api "repos/$REPOSITORY/pulls/$pull_number")
             latest_default_sha=$(gh api \
               "repos/$REPOSITORY/commits/$default_branch" --jq '.sha')
-            if [[ $(jq -r '.base.sha' <<<"$latest") != "$latest_default_sha" ]]; then
-              set_policy_label "$pull_number" "$rebase_label"
-              cutoff=$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)
-              marker="<!-- rule-bot-automerge-rebase:$head_sha:$latest_default_sha -->"
-              request_dependabot_command "$pull_number" \
-                'dependabot rebase' "$marker" "$cutoff"
-              echo "PR #$pull_number became stale immediately before merge"
+            if [[ "$latest_default_sha" != "$default_sha" ]]; then
+              echo "$default_branch changed from $default_sha to $latest_default_sha; deferring PR #$pull_number"
               exit 0
             fi
             if ! jq -e \

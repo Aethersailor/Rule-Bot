@@ -141,6 +141,7 @@ class GroupService:
         short_sha = "".join(
             char for char in str(commit_sha or "") if char.isalnum()
         )[:8]
+        group_ref = log_reference(str(self._announcement_group_id))
         safe_domain = self._escape_inline_code(domain)
         message = "📣 *直连规则已更新*\n\n"
         message += "🧾 *已写入规则*\n"
@@ -175,30 +176,30 @@ class GroupService:
                 timeout=8,
             )
             logger.info(
-                "群组播报已发送: group={}, domain_ref={}, commit={}",
-                self._announcement_group_id,
+                "群组播报已发送: group_ref={}, domain_ref={}, commit={}",
+                group_ref,
                 log_reference(domain),
                 short_sha or "unknown",
             )
             return True
         except asyncio.TimeoutError:
             logger.warning(
-                "群组播报超时，不影响规则提交: group={}, domain_ref={}",
-                self._announcement_group_id,
+                "群组播报超时，不影响规则提交: group_ref={}, domain_ref={}",
+                group_ref,
                 log_reference(domain),
             )
         except TelegramError as e:
             logger.warning(
-                "群组播报失败，不影响规则提交: group={}, domain_ref={}, error={}",
-                self._announcement_group_id,
+                "群组播报失败，不影响规则提交: group_ref={}, domain_ref={}, error_type={}",
+                group_ref,
                 log_reference(domain),
-                e,
+                type(e).__name__,
             )
         except Exception as e:
             logger.warning(
-                "群组播报异常，不影响规则提交: group={}, domain_ref={}, error={}",
-                self._announcement_group_id,
+                "群组播报异常，不影响规则提交: group_ref={}, domain_ref={}, error_type={}",
+                group_ref,
                 log_reference(domain),
-                e,
+                type(e).__name__,
             )
         return False

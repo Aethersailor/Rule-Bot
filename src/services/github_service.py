@@ -28,6 +28,7 @@ class GitHubService:
         self.github = Github(auth=Auth.Token(config.GITHUB_TOKEN))
         self.repo = None
         self._write_lock = asyncio.Lock()
+        self._repo_lock = asyncio.Lock()
         self._file_cache = TTLCache(
             getattr(config, "GITHUB_FILE_CACHE_SIZE", 0),
             getattr(config, "GITHUB_FILE_CACHE_TTL", 0)
@@ -140,11 +141,26 @@ class GitHubService:
                 logger.info(f"成功连接到 GitHub 仓库: {self.config.GITHUB_REPO} (目标分支: 默认分支)")
         except Exception as e:
             logger.error(f"连接 GitHub 仓库失败: {e}")
+
+    async def _ensure_repo(self) -> bool:
+        """Retry a transient startup connection failure without a restart."""
+        if self.repo is not None:
+            return True
+        lock = getattr(self, "_repo_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._repo_lock = lock
+        async with lock:
+            if self.repo is None:
+                await asyncio.to_thread(self._initialize_repo)
+        return self.repo is not None
     
     async def get_rule_file_content(self, file_path: str, use_cache: bool = True) -> Optional[str]:
         """获取规则文件内容"""
         try:
             logger.debug(f"正在获取文件内容: {file_path}")
+            if not await self._ensure_repo():
+                return None
             cache_key = self._cache_key(file_path)
             if use_cache:
                 cached = self._file_cache.get(cache_key)
@@ -182,6 +198,8 @@ class GitHubService:
         """获取规则文件内容和 SHA"""
         try:
             logger.debug(f"正在获取文件内容和 SHA: {file_path}")
+            if not await self._ensure_repo():
+                return None
             cache_key = self._cache_key(file_path)
             if use_cache:
                 cached = self._file_cache.get(cache_key)
@@ -308,7 +326,7 @@ class GitHubService:
                 file_path = self.config.DIRECT_RULE_FILE
 
             # 检查仓库连接
-            if not self.repo:
+            if not await self._ensure_repo():
                 error_msg = "GitHub 仓库连接未初始化"
                 logger.error(error_msg)
                 return {"success": False, "error": error_msg}
@@ -565,7 +583,7 @@ class GitHubService:
             if not file_path:
                 file_path = self.config.DIRECT_RULE_FILE
 
-            if not self.repo:
+            if not await self._ensure_repo():
                 error_msg = "GitHub 仓库连接未初始化"
                 logger.error(error_msg)
                 return {"success": False, "error": error_msg}

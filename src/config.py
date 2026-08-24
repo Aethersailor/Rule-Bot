@@ -122,7 +122,7 @@ class Config:
             self.REQUIRED_GROUP_ID and self.REQUIRED_GROUP_NAME and self.REQUIRED_GROUP_LINK
         )
         if required_group_id_raw and not self.REQUIRED_GROUP_ID:
-            logger.warning(f"无效的 REQUIRED_GROUP_ID: {required_group_id_raw}")
+            logger.warning("REQUIRED_GROUP_ID 格式无效（原始值不写入日志）")
         if self.REQUIRED_GROUP_ID and not self.GROUP_CHECK_ENABLED:
             logger.warning("群组验证已关闭：REQUIRED_GROUP_NAME 或 REQUIRED_GROUP_LINK 未配置")
 
@@ -138,13 +138,13 @@ class Config:
             announcement_group_id_raw
         )
         if announcement_group_id_raw and not self.ANNOUNCEMENT_GROUP_ID:
-            logger.warning(f"无效的 ANNOUNCEMENT_GROUP_ID: {announcement_group_id_raw}")
+            logger.warning("ANNOUNCEMENT_GROUP_ID 格式无效（原始值不写入日志）")
 
         # 管理员配置（Telegram 用户 ID 列表）
         # 支持逗号分隔的多个用户 ID，例如：123456789,987654321
         self.ADMIN_USER_IDS = self._parse_user_ids(os.getenv("ADMIN_USER_IDS", ""))
         if self.ADMIN_USER_IDS:
-            logger.info(f"已加载管理员 IDs: {self.ADMIN_USER_IDS}")
+            logger.info("已加载 {} 个管理员 ID", len(self.ADMIN_USER_IDS))
         else:
             logger.info("未配置管理员 IDs（ADMIN_USER_IDS）")
         
@@ -289,7 +289,7 @@ class Config:
             try:
                 group_ids.append(int(raw_id))
             except ValueError:
-                logger.warning(f"无效的 ALLOWED_GROUP_IDS: {raw_id}")
+                logger.warning("ALLOWED_GROUP_IDS 包含无效条目（原始值不写入日志）")
         return group_ids
 
     def _parse_user_ids(self, ids_str: str) -> list:
@@ -312,7 +312,7 @@ class Config:
             try:
                 user_ids.append(int(raw_id))
             except ValueError:
-                logger.warning(f"无效的 ADMIN_USER_IDS: {raw_id}")
+                logger.warning("ADMIN_USER_IDS 包含无效条目（原始值不写入日志）")
         return user_ids
 
     def _parse_required_group_id(self, group_id_raw: str) -> Optional[int]:

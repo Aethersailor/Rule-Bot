@@ -195,7 +195,10 @@ class RuleBot:
                 filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND & filters.Entity("mention"),
                 self.group_handler.handle_group_message
             ), group=0)
-            logger.info(f"群组工作模式已启用，允许的群组: {self.config.ALLOWED_GROUP_IDS}")
+            logger.info(
+                "群组工作模式已启用，允许的群组数: {}",
+                len(self.config.ALLOWED_GROUP_IDS),
+            )
         
         # 私聊消息处理器（用于处理用户输入）
         self.app.add_handler(MessageHandler(

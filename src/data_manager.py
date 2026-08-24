@@ -23,6 +23,13 @@ from .utils.metrics import METRICS
 from .utils.memory import trim_memory
 
 
+MAX_DOWNLOAD_BYTES = {
+    "geoip": 64 * 1024 * 1024,
+    "cn_ipv4": 16 * 1024 * 1024,
+    "geosite": 64 * 1024 * 1024,
+}
+
+
 class DataManager:
     """数据管理器"""
     
@@ -143,16 +150,31 @@ class DataManager:
         """初始下载数据"""
         try:
             # 启动时先验证持久化数据；即使文件仍在更新周期内，损坏数据也必须重下。
+            inspections = await asyncio.gather(
+                asyncio.to_thread(
+                    self._inspect_existing_data,
+                    self.geoip_file,
+                    "geoip",
+                    self.geoip_meta,
+                ),
+                asyncio.to_thread(
+                    self._inspect_existing_data,
+                    self.cn_ipv4_file,
+                    "cn_ipv4",
+                    self.cn_ipv4_meta,
+                ),
+                asyncio.to_thread(
+                    self._inspect_existing_data,
+                    self.geosite_file,
+                    "geosite",
+                    self.geosite_meta,
+                ),
+            )
             existing_valid = {
-                "geoip": self._inspect_existing_data(
-                    self.geoip_file, "geoip", self.geoip_meta
-                )[0],
-                "cn_ipv4": self._inspect_existing_data(
-                    self.cn_ipv4_file, "cn_ipv4", self.cn_ipv4_meta
-                )[0],
-                "geosite": self._inspect_existing_data(
-                    self.geosite_file, "geosite", self.geosite_meta
-                )[0],
+                label: inspection[0]
+                for label, inspection in zip(
+                    ("geoip", "cn_ipv4", "geosite"), inspections
+                )
             }
             need_geoip = not existing_valid["geoip"] or self._is_file_outdated(
                 self.geoip_file,
@@ -267,44 +289,9 @@ class DataManager:
                 return
             
             logger.info("加载 GeoSite 数据到内存...")
-            domains: Set[str] = set()
-            keywords: List[str] = []
-            regex_patterns: List[Pattern[str]] = []
-            includes: List[str] = []
-            
-            with open(self.geosite_file, 'r', encoding='utf-8') as f:
-                for line_num, line in enumerate(f, 1):
-                    line = line.strip()
-                    if line and not line.startswith('#'):
-                        domain = ""
-                        if line.startswith('full:'):
-                            domain = line[5:]
-                        elif line.startswith('domain:'):
-                            domain = line[7:]
-                        elif line.startswith('keyword:'):
-                            keyword = line[8:].strip()
-                            if keyword:
-                                keywords.append(keyword.lower())
-                        elif line.startswith('regexp:'):
-                            pattern = line[7:].strip()
-                            if pattern:
-                                try:
-                                    regex_patterns.append(re.compile(pattern, re.IGNORECASE))
-                                except re.error as e:
-                                    logger.warning(f"无效的 GeoSite 正则: {pattern} ({e})")
-                        elif line.startswith('include:') or line.startswith('geosite:'):
-                            include_item = line.split(':', 1)[1].strip()
-                            if include_item:
-                                includes.append(include_item)
-                        else:
-                            domain = line
-                        
-                        if domain:
-                            domains.add(domain.lower())
-                    
-                    # 每 10000 行输出一次进度
-                    if line_num % 10000 == 0:
-                        logger.info(f"已处理 {line_num} 行 GeoSite 数据")
+            domains, keywords, regex_patterns, includes = await asyncio.to_thread(
+                self._parse_geosite_file
+            )
             
             with self._data_lock:
                 self.geosite_domains = domains
@@ -328,6 +315,55 @@ class DataManager:
         except Exception as e:
             logger.error(f"GeoSite 数据加载失败: {e}")
             raise
+
+    def _parse_geosite_file(
+        self,
+    ) -> tuple[Set[str], List[str], List[Pattern[str]], List[str]]:
+        """Parse the potentially large GeoSite file outside the event loop."""
+        domains: Set[str] = set()
+        keywords: List[str] = []
+        regex_patterns: List[Pattern[str]] = []
+        includes: List[str] = []
+
+        with self.geosite_file.open("r", encoding="utf-8") as handle:
+            for line_num, raw_line in enumerate(handle, 1):
+                line = raw_line.strip()
+                if line and not line.startswith("#"):
+                    domain = ""
+                    if line.startswith("full:"):
+                        domain = line[5:]
+                    elif line.startswith("domain:"):
+                        domain = line[7:]
+                    elif line.startswith("keyword:"):
+                        keyword = line[8:].strip()
+                        if keyword:
+                            keywords.append(keyword.lower())
+                    elif line.startswith("regexp:"):
+                        pattern = line[7:].strip()
+                        if pattern:
+                            try:
+                                regex_patterns.append(
+                                    re.compile(pattern, re.IGNORECASE)
+                                )
+                            except re.error as error:
+                                logger.warning(
+                                    "无效的 GeoSite 正则（正文不写入日志）: {}",
+                                    type(error).__name__,
+                                )
+                    elif line.startswith("include:") or line.startswith("geosite:"):
+                        include_item = line.split(":", 1)[1].strip()
+                        if include_item:
+                            includes.append(include_item)
+                    else:
+                        domain = line
+
+                    if domain:
+                        domains.add(domain.lower())
+
+                if line_num % 10000 == 0:
+                    logger.info("已处理 {} 行 GeoSite 数据", line_num)
+
+        return domains, keywords, regex_patterns, includes
     
     async def is_domain_in_geosite(self, domain: str) -> bool:
         """检查域名是否在 GeoSite 中"""
@@ -601,11 +637,13 @@ class DataManager:
         last_error = None
         session = await self._get_session()
         current_meta = self._load_meta(meta_path)
-        existing_valid, existing_hash, existing_metric = self._inspect_existing_data(
+        existing_valid, existing_hash, existing_metric = await asyncio.to_thread(
+            self._inspect_existing_data,
             dest_path,
             label,
             meta_path,
         )
+        max_bytes = MAX_DOWNLOAD_BYTES[label]
 
         for url in urls:
             try:
@@ -621,7 +659,8 @@ class DataManager:
                     start_ts = time.perf_counter()
                     async with session.get(url, headers=headers) as response:
                         if response.status == 304:
-                            valid_now, hash_now, metric_now = self._inspect_existing_data(
+                            valid_now, hash_now, metric_now = await asyncio.to_thread(
+                                self._inspect_existing_data,
                                 dest_path,
                                 label,
                                 meta_path,
@@ -651,16 +690,33 @@ class DataManager:
                             logger.warning("{} 数据下载失败: {} (状态码: {})", label, url, response.status)
                             break
 
+                        content_length = response.headers.get("Content-Length")
+                        if content_length:
+                            try:
+                                declared_size = int(content_length)
+                            except ValueError as error:
+                                raise ValueError("下载响应的 Content-Length 无效") from error
+                            if declared_size < 0 or declared_size > max_bytes:
+                                raise ValueError(
+                                    f"{label} 下载响应超过 {max_bytes} 字节上限"
+                                )
+
                         tmp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
                         digest = hashlib.sha256()
                         size = 0
                         with tmp_path.open("wb") as handle:
-                            async for chunk in response.content.iter_chunked(8192):
+                            async for chunk in response.content.iter_chunked(64 * 1024):
                                 handle.write(chunk)
                                 digest.update(chunk)
                                 size += len(chunk)
+                                if size > max_bytes:
+                                    raise ValueError(
+                                        f"{label} 下载响应超过 {max_bytes} 字节上限"
+                                    )
 
-                        new_metric = self._validate_download(tmp_path, label)
+                        new_metric = await asyncio.to_thread(
+                            self._validate_download, tmp_path, label
+                        )
                         if existing_valid:
                             self._validate_conservative_shrink(
                                 label,

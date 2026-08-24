@@ -2628,7 +2628,11 @@ class HandlerManager:
 
         try:
             if not self.is_admin(user_id):
-                logger.warning(f"管理员权限操作被拒绝: user_id={user_id}, data={data}")
+                logger.warning(
+                    "管理员权限操作被拒绝: user_ref={}, action={}",
+                    log_reference(str(user_id)),
+                    data.partition("|")[0],
+                )
                 if not is_private_chat:
                     await answer_group(
                         "此按钮仅供发起操作的管理员使用。",

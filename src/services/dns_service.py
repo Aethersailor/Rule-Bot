@@ -20,6 +20,9 @@ from ..utils.cache import TTLCache
 from ..utils.metrics import METRICS
 
 
+MAX_DNS_RESPONSE_BYTES = 65535
+
+
 class DNSService:
     """DNS 服务"""
     
@@ -372,7 +375,7 @@ class DNSService:
                         }
                     ) as response:
                         if response.status == 200:
-                            response_data = await response.read()
+                            response_data = await self._read_dns_response(response)
                             result = parser_func(response_data)
                             if result:
                                 return result
@@ -411,7 +414,9 @@ class DNSService:
                         },
                     ) as response:
                         if response.status == 200:
-                            message = dns.message.from_wire(await response.read())
+                            message = dns.message.from_wire(
+                                await self._read_dns_response(response)
+                            )
                             answer_count = sum(len(rrset) for rrset in message.answer)
                             return message.rcode(), answer_count
             except asyncio.CancelledError:
@@ -424,6 +429,17 @@ class DNSService:
             if attempt == 0:
                 await asyncio.sleep(0.5)
         return None
+
+    @staticmethod
+    async def _read_dns_response(response: aiohttp.ClientResponse) -> bytes:
+        chunks = []
+        size = 0
+        async for chunk in response.content.iter_chunked(8192):
+            size += len(chunk)
+            if size > MAX_DNS_RESPONSE_BYTES:
+                raise ValueError("DoH 响应超过 DNS 消息大小上限")
+            chunks.append(chunk)
+        return b"".join(chunks)
 
     @staticmethod
     def _query_system_dns_status_sync(domain: str) -> Optional[tuple[int, int]]:

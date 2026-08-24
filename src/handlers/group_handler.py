@@ -125,9 +125,16 @@ class GroupHandler:
                 return
             
             # 检查群组是否在白名单
-            logger.debug(f"[群组处理器] 检查白名单 - 群组 ID: {chat.id}, 白名单: {self.config.ALLOWED_GROUP_IDS}")
+            logger.debug(
+                "[群组处理器] 检查白名单: group_ref={}, configured_groups={}",
+                log_reference(str(chat.id)),
+                len(self.config.ALLOWED_GROUP_IDS),
+            )
             if not self.is_group_allowed(chat.id):
-                logger.debug(f"[群组处理器] 群组 {chat.id} 不在白名单中，忽略消息")
+                logger.debug(
+                    "[群组处理器] 群组不在白名单中，忽略消息: group_ref={}",
+                    log_reference(str(chat.id)),
+                )
                 return
             
             # 仅处理包含 @mention 实体的消息
@@ -179,11 +186,14 @@ class GroupHandler:
             )
             
         except Exception as e:
-            logger.error(f"处理群组消息失败: {e}")
+            logger.error("处理群组消息失败: error_type={}", type(e).__name__)
             try:
                 await update.effective_message.reply_text("❌ 处理失败，请稍后重试。")
             except Exception as reply_error:
-                logger.debug("发送群组错误提示失败: {}", reply_error)
+                logger.debug(
+                    "发送群组错误提示失败: error_type={}",
+                    type(reply_error).__name__,
+                )
     
     async def _extract_domain_from_message(self, message: Message) -> Optional[str]:
         """从消息中提取域名（支持回复消息）
@@ -354,7 +364,7 @@ class GroupHandler:
             await processing_msg.edit_text(result_text, reply_markup=reply_markup, parse_mode='Markdown')
             
         except Exception as e:
-            logger.error(f"处理域名请求失败: {e}")
+            logger.error("处理域名请求失败: error_type={}", type(e).__name__)
             added = bool(result and result.get("action") == "added")
             uncertain = bool(result and result.get("submission_uncertain"))
             visible_domain = (

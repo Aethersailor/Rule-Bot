@@ -14,6 +14,6 @@
 
 Dependabot 更新按周处理，运行依赖和开发工具分别分组。PR 侧的只读工作流只提取并固化 Dependabot 元数据；默认分支上的独立特权工作流会复核 PR 作者、同仓库来源、签名、精确 head SHA、升级等级，以及 PR 和当前 `master` 的 Docker 验证与 CodeQL 门禁。自动合并器会在相关检查完成时运行，并每 15 分钟扫描一次所有开放 PR 作为兜底；失败或取消的检查最多自动重试 3 次。只有 minor/patch 会按创建顺序、使用 head-SHA 前置条件 squash 合并，major 保持独立 PR 供人工审查；运行期间 `master` 发生变化时，本轮会自动推迟。工作流摘要和互斥标签会明确标出“可自动合并”或“需要人工审查”，不能把绿色但跳过合并的运行理解为已经合并。
 
-自动合并后会显式触发并等待 `master` 的 Docker 发布和 CodeQL，避免 `GITHUB_TOKEN` 产生的合并事件不触发后续工作流。CodeQL 对 Python 和 GitHub Actions 同时执行扩展安全与质量查询，并在每次 push、PR、手动触发之外增加每周兜底扫描。
+自动合并后会显式触发并等待 `master` 的 Docker 发布和 CodeQL，避免 `GITHUB_TOKEN` 产生的合并事件不触发后续工作流；验证成功后再显式触发一次协调器以处理同批剩余 PR，空队列运行会直接结束，不会形成循环。CodeQL 对 Python 和 GitHub Actions 同时执行扩展安全与质量查询，并在每次 push、PR、手动触发之外增加每周兜底扫描。
 
 工作流引用的 Actions 全部固定到不可变 commit SHA，并保留主版本注释供 Dependabot 识别和更新，避免可移动标签带来的供应链风险。

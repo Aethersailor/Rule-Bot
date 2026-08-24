@@ -430,6 +430,12 @@ jobs:
                 and .merge_commit_sha == $sha
               ' <<<"$final_pull" >/dev/null
 
+            # workflow_run chains can stop after several levels. Start exactly
+            # one follow-up reconciliation after a real merge; an empty run
+            # exits without dispatching another one.
+            gh workflow run dependabot-auto-merge.yml --repo "$REPOSITORY" \
+              --ref "$default_branch"
+
             {
               echo "### Dependabot merge completed"
               echo
@@ -438,6 +444,7 @@ jobs:
               echo "- Squash commit: \`$merged_sha\`"
               echo "- Docker publication run: \`$docker_run\`"
               echo "- CodeQL run: \`$codeql_run\`"
+              echo "- Follow-up reconciliation: dispatched"
             } >>"$GITHUB_STEP_SUMMARY"
             echo "Merged PR #$pull_number as $merged_sha and verified post-merge workflows"
             exit 0

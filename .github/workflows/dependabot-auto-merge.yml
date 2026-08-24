@@ -2,10 +2,18 @@ name: Auto-merge Dependabot PRs
 
 on:
   workflow_run:
-    workflows: [Classify Dependabot Updates]
+    workflows:
+      - Classify Dependabot Updates
+      - Build and Push Docker Image
+      - CodeQL
     types: [completed]
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
 
 concurrency:
+  # Every run reconciles all open Dependabot PRs, so GitHub may safely replace
+  # a pending run while one reconciliation is already active.
   group: dependabot-auto-merge-${{ github.repository }}
   cancel-in-progress: false
 
@@ -17,320 +25,470 @@ permissions:
   pull-requests: write
 
 jobs:
-  merge:
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.actor.login == 'dependabot[bot]'
-    runs-on: ubuntu-latest
+  reconcile:
+    name: Reconcile Dependabot PRs
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - name: Download unprivileged policy evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/dependabot-policy
-
-      - name: Validate policy evidence
-        id: policy
-        env:
-          EVENT_PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
-          EVENT_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          POLICY_ROOT: ${{ runner.temp }}/dependabot-policy
-        shell: bash
-        run: |
-          set -euo pipefail
-          mapfile -d '' policy_files < <(find "$POLICY_ROOT" -type f -name policy.json -print0)
-          test "${#policy_files[@]}" -eq 1
-          policy_file="${policy_files[0]}"
-
-          jq -e \
-            --argjson pr_number "$EVENT_PR_NUMBER" \
-            --arg head_sha "$EVENT_HEAD_SHA" '
-              .pr_number == $pr_number
-              and .head_sha == $head_sha
-              and .base_ref == "master"
-              and (.maintainer_changes == false)
-              and (.dependency_names | type == "string" and length > 0)
-            ' "$policy_file" >/dev/null
-
-          update_type="$(jq -er '.update_type' "$policy_file")"
-          case "$update_type" in
-            version-update:semver-minor|version-update:semver-patch)
-              eligible=true
-              ;;
-            *)
-              eligible=false
-              ;;
-          esac
-
-          echo "pr_number=$EVENT_PR_NUMBER" >> "$GITHUB_OUTPUT"
-          echo "head_sha=$EVENT_HEAD_SHA" >> "$GITHUB_OUTPUT"
-          echo "update_type=$update_type" >> "$GITHUB_OUTPUT"
-          echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
-
-      - name: Revalidate the live pull request
-        id: live
+      - name: Reconcile one fully validated Dependabot update
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ steps.policy.outputs.pr_number }}
-          EXPECTED_HEAD_SHA: ${{ steps.policy.outputs.head_sha }}
+          REPOSITORY: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
-          pr="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")"
-          jq -e \
-            --arg expected_head "$EXPECTED_HEAD_SHA" '
-              .state == "open"
-              and (.draft | not)
-              and .user.login == "dependabot[bot]"
-              and .base.ref == "master"
-              and .head.sha == $expected_head
-            ' <<<"$pr" >/dev/null
 
-          commits="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER/commits?per_page=100")"
-          jq -e '
-            length > 0
-            and all(.[]; .author.login == "dependabot[bot]")
-            and all(.[]; .commit.verification.verified == true)
-          ' <<<"$commits" >/dev/null
+          default_branch=$(gh repo view "$REPOSITORY" \
+            --json defaultBranchRef --jq '.defaultBranchRef.name')
+          default_sha=$(gh api "repos/$REPOSITORY/commits/$default_branch" --jq '.sha')
 
-          master_sha="$(gh api "repos/$GH_REPO/git/ref/heads/master" --jq '.object.sha')"
-          base_sha="$(jq -er '.base.sha' <<<"$pr")"
-          current=false
-          if [[ "$base_sha" == "$master_sha" ]]; then
-            current=true
-          else
-            echo "PR #$PR_NUMBER is based on $base_sha; waiting for Dependabot to rebase onto $master_sha"
-          fi
-          echo "current=$current" >> "$GITHUB_OUTPUT"
-
-      - name: Publish policy decision
-        env:
-          PR_NUMBER: ${{ steps.policy.outputs.pr_number }}
-          UPDATE_TYPE: ${{ steps.policy.outputs.update_type }}
-          ELIGIBLE: ${{ steps.policy.outputs.eligible }}
-          CURRENT: ${{ steps.live.outputs.current }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "$ELIGIBLE" != true ]]; then
-            decision="manual review required; major updates are never merged automatically"
-          elif [[ "$CURRENT" != true ]]; then
-            decision="eligible after Dependabot rebases onto the current master"
-          else
-            decision="eligible for automatic merge after all required checks pass"
-          fi
-
-          {
-            echo "### Dependabot policy decision"
-            echo
-            echo "- Pull request: #$PR_NUMBER"
-            echo "- Update type: \`$UPDATE_TYPE\`"
-            echo "- Decision: $decision"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Reconcile Dependabot policy labels
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ steps.policy.outputs.pr_number }}
-          ELIGIBLE: ${{ steps.policy.outputs.eligible }}
-          CURRENT: ${{ steps.live.outputs.current }}
-        shell: bash
-        run: |
-          set -euo pipefail
           automerge_label="dependabot-automerge"
           rebase_label="dependabot-rebase-needed"
           manual_label="dependabot-manual-review"
 
-          gh label create "$automerge_label" --repo "$GH_REPO" --force \
+          gh label create "$automerge_label" --repo "$REPOSITORY" --force \
             --color "0e8a16" \
             --description "Minor or patch Dependabot update eligible for automatic merge"
-          gh label create "$rebase_label" --repo "$GH_REPO" --force \
+          gh label create "$rebase_label" --repo "$REPOSITORY" --force \
             --color "fbca04" \
             --description "Eligible Dependabot update waiting for a current master base"
-          gh label create "$manual_label" --repo "$GH_REPO" --force \
+          gh label create "$manual_label" --repo "$REPOSITORY" --force \
             --color "d93f0b" \
             --description "Dependabot update requires manual review"
 
-          if [[ "$ELIGIBLE" != true ]]; then
-            selected_label="$manual_label"
-            obsolete_labels=("$automerge_label" "$rebase_label")
-          elif [[ "$CURRENT" != true ]]; then
-            selected_label="$rebase_label"
-            obsolete_labels=("$automerge_label" "$manual_label")
-          else
-            selected_label="$automerge_label"
-            obsolete_labels=("$rebase_label" "$manual_label")
-          fi
+          set_policy_label() {
+            local pull_number="$1"
+            local selected_label="$2"
+            local label
 
-          gh pr edit "$PR_NUMBER" --repo "$GH_REPO" --add-label "$selected_label"
-          for label in "${obsolete_labels[@]}"; do
-            gh pr edit "$PR_NUMBER" --repo "$GH_REPO" --remove-label "$label" || true
+            gh pr edit "$pull_number" --repo "$REPOSITORY" \
+              --add-label "$selected_label" >/dev/null
+            for label in "$automerge_label" "$rebase_label" "$manual_label"; do
+              if [[ "$label" != "$selected_label" ]]; then
+                gh pr edit "$pull_number" --repo "$REPOSITORY" \
+                  --remove-label "$label" >/dev/null 2>&1 || true
+              fi
+            done
+          }
+
+          request_dependabot_command() {
+            local pull_number="$1"
+            local command="$2"
+            local marker="$3"
+            local cutoff="$4"
+            local body
+            local comments
+
+            comments=$(gh api --paginate --slurp \
+              "repos/$REPOSITORY/issues/$pull_number/comments?per_page=100" | jq 'add')
+            if jq -e \
+              --arg marker "$marker" \
+              --arg cutoff "$cutoff" '
+                any(.[];
+                  (.body | contains($marker))
+                  and .created_at >= $cutoff
+                )
+              ' <<<"$comments" >/dev/null; then
+              echo "Dependabot command already requested recently for PR #$pull_number"
+              return
+            fi
+
+            body=$(printf '@%s\n\n%s\n' "$command" "$marker")
+            gh pr comment "$pull_number" --repo "$REPOSITORY" \
+              --body "$body" >/dev/null
+          }
+
+          rerun_gate() {
+            local run_id="$1"
+            local conclusion="$2"
+
+            if [[ "$conclusion" == failure ]]; then
+              gh api --method POST \
+                "repos/$REPOSITORY/actions/runs/$run_id/rerun-failed-jobs" >/dev/null
+            else
+              gh api --method POST \
+                "repos/$REPOSITORY/actions/runs/$run_id/rerun" >/dev/null
+            fi
+          }
+
+          # Do not merge another dependency while the current default branch is
+          # unverified or its latest image has not been published successfully.
+          default_runs=$(gh api \
+            "repos/$REPOSITORY/actions/runs?head_sha=$default_sha&per_page=100")
+          declare -A default_workflow_files=(
+            ['Build and Push Docker Image']=docker-build.yml
+            [CodeQL]=codeql.yml
+          )
+          for workflow in 'Build and Push Docker Image' CodeQL; do
+            run=$(jq -c \
+              --arg workflow "$workflow" \
+              --arg sha "$default_sha" '
+                [.workflow_runs[]
+                  | select(.name == $workflow and .head_sha == $sha)
+                  | select(.event == "push" or .event == "workflow_dispatch")]
+                | sort_by(.id)
+                | last // null
+              ' <<<"$default_runs")
+            if [[ "$run" == null ]]; then
+              gh workflow run "${default_workflow_files[$workflow]}" \
+                --repo "$REPOSITORY" --ref "$default_branch"
+              echo "Dispatched missing $workflow gate for $default_branch@$default_sha"
+              exit 0
+            fi
+
+            status=$(jq -r '.status' <<<"$run")
+            conclusion=$(jq -r '.conclusion // ""' <<<"$run")
+            if [[ "$status" != completed ]]; then
+              echo "$default_branch@$default_sha is still running $workflow"
+              exit 0
+            fi
+            if [[ "$conclusion" != success ]]; then
+              run_id=$(jq -r '.id' <<<"$run")
+              run_attempt=$(jq -r '.run_attempt // 1' <<<"$run")
+              if [[ "$conclusion" =~ ^(failure|cancelled|timed_out|startup_failure|stale)$ ]] &&
+                 (( run_attempt < 3 )); then
+                rerun_gate "$run_id" "$conclusion"
+                echo "Re-running failed $workflow gate $run_id for $default_branch@$default_sha (attempt $((run_attempt + 1))/3)"
+                exit 0
+              fi
+              echo "$default_branch@$default_sha failed $workflow after $run_attempt attempt(s): $conclusion" >&2
+              exit 1
+            fi
           done
 
-      - name: Wait for the exact required checks
-        if: steps.policy.outputs.eligible == 'true' && steps.live.outputs.current == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ steps.policy.outputs.pr_number }}
-          EXPECTED_HEAD_SHA: ${{ steps.policy.outputs.head_sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          required=(
-            "classify"
-            "validate"
-            "build-and-push"
-            "analyze (actions)"
-            "analyze (python)"
-            "CodeQL"
+          mapfile -t pull_requests < <(
+            gh api --paginate \
+              "repos/$REPOSITORY/pulls?state=open&base=$default_branch&sort=created&direction=asc&per_page=100" \
+              --jq '.[].number'
           )
-          ready=false
-          for attempt in {1..120}; do
-            check_runs="$(gh api \
-              "repos/$GH_REPO/commits/$EXPECTED_HEAD_SHA/check-runs?per_page=100")"
-            latest="$(jq '
-              .check_runs
-              | group_by(.name)
-              | map(max_by(.started_at))
-            ' <<<"$check_runs")"
 
-            failed="$(jq -r '
-              .[]
-              | select(
-                  .status == "completed"
-                  and (.conclusion | IN("failure", "cancelled", "timed_out", "action_required", "stale"))
-                )
-              | .name
-            ' <<<"$latest")"
-            if [[ -n "$failed" ]]; then
-              echo "failing checks for $EXPECTED_HEAD_SHA:" >&2
-              echo "$failed" >&2
+          for pull_number in "${pull_requests[@]}"; do
+            pull=$(gh api "repos/$REPOSITORY/pulls/$pull_number")
+            author=$(jq -r '.user.login' <<<"$pull")
+            base_ref=$(jq -r '.base.ref' <<<"$pull")
+            base_sha=$(jq -r '.base.sha' <<<"$pull")
+            head_ref=$(jq -r '.head.ref' <<<"$pull")
+            head_repo=$(jq -r '.head.repo.full_name // ""' <<<"$pull")
+            head_sha=$(jq -r '.head.sha' <<<"$pull")
+            title=$(jq -r '.title' <<<"$pull")
+
+            [[ $(jq -r '.state' <<<"$pull") == open ]] || continue
+            [[ $(jq -r '.draft' <<<"$pull") == false ]] || continue
+            [[ "$author" == 'dependabot[bot]' ]] || continue
+            [[ "$base_ref" == "$default_branch" ]] || continue
+            [[ "$head_repo" == "$REPOSITORY" ]] || continue
+            [[ "$head_ref" == dependabot/* ]] || continue
+            if [[ ! "$title" =~ ^(build|fix)\((deps|deps-dev)\):[[:space:]] ]]; then
+              set_policy_label "$pull_number" "$manual_label"
+              echo "PR #$pull_number has a non-standard Dependabot title"
+              continue
+            fi
+
+            commits=$(gh api \
+              "repos/$REPOSITORY/pulls/$pull_number/commits?per_page=100")
+            if ! jq -e '
+              length > 0
+              and all(.[]; .author.login == "dependabot[bot]")
+              and all(.[]; .commit.verification.verified == true)
+            ' <<<"$commits" >/dev/null; then
+              set_policy_label "$pull_number" "$manual_label"
+              echo "PR #$pull_number contains an untrusted or unsigned commit"
+              continue
+            fi
+
+            runs=$(gh api \
+              "repos/$REPOSITORY/actions/runs?event=pull_request&head_sha=$head_sha&per_page=100")
+            policy_run=$(jq -c \
+              --arg sha "$head_sha" \
+              --argjson pull_number "$pull_number" '
+                [.workflow_runs[]
+                  | select(.name == "Classify Dependabot Updates" and .head_sha == $sha)
+                  | select(any(.pull_requests[]?; .number == $pull_number))]
+                | sort_by(.id)
+                | last // null
+              ' <<<"$runs")
+            if [[ "$policy_run" == null ]]; then
+              cutoff=$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+              marker="<!-- rule-bot-automerge-recreate:$head_sha -->"
+              request_dependabot_command "$pull_number" \
+                'dependabot recreate' "$marker" "$cutoff"
+              echo "Requested fresh policy evidence for PR #$pull_number"
+              exit 0
+            fi
+
+            policy_run_id=$(jq -r '.id' <<<"$policy_run")
+            policy_status=$(jq -r '.status' <<<"$policy_run")
+            policy_conclusion=$(jq -r '.conclusion // ""' <<<"$policy_run")
+            policy_attempt=$(jq -r '.run_attempt // 1' <<<"$policy_run")
+            if [[ "$policy_status" != completed ]]; then
+              echo "PR #$pull_number is still producing policy evidence for $head_sha"
+              exit 0
+            fi
+            if [[ "$policy_conclusion" != success ]]; then
+              if [[ "$policy_conclusion" =~ ^(failure|cancelled|timed_out|startup_failure|stale)$ ]] &&
+                 (( policy_attempt < 3 )); then
+                rerun_gate "$policy_run_id" "$policy_conclusion"
+                echo "Re-running policy gate $policy_run_id for PR #$pull_number (attempt $((policy_attempt + 1))/3)"
+                exit 0
+              fi
+              set_policy_label "$pull_number" "$manual_label"
+              echo "PR #$pull_number has no successful policy evidence after $policy_attempt attempt(s)"
+              continue
+            fi
+
+            artifact_name="dependabot-policy-$pull_number-$head_sha"
+            artifact=$(gh api \
+              "repos/$REPOSITORY/actions/runs/$policy_run_id/artifacts?per_page=100" \
+              | jq -c \
+                --arg name "$artifact_name" '
+                  [.artifacts[]
+                    | select(.name == $name and (.expired | not))]
+                  | sort_by(.id)
+                  | last // null
+                ')
+            if [[ "$artifact" == null ]]; then
+              if (( policy_attempt < 3 )); then
+                gh api --method POST \
+                  "repos/$REPOSITORY/actions/runs/$policy_run_id/rerun" >/dev/null
+                echo "Re-running policy gate $policy_run_id to restore expired evidence for PR #$pull_number"
+                exit 0
+              fi
+              set_policy_label "$pull_number" "$manual_label"
+              echo "PR #$pull_number has no live policy artifact after $policy_attempt attempt(s)"
+              continue
+            fi
+
+            policy_root="$RUNNER_TEMP/dependabot-policy-$pull_number-$head_sha"
+            mkdir -p "$policy_root"
+            gh run download "$policy_run_id" --repo "$REPOSITORY" \
+              --name "$artifact_name" --dir "$policy_root"
+            mapfile -d '' policy_files < <(
+              find "$policy_root" -type f -name policy.json -print0
+            )
+            if [[ ${#policy_files[@]} -ne 1 ]] ||
+               ! jq -e \
+                 --argjson pull_number "$pull_number" \
+                 --arg head_sha "$head_sha" \
+                 --arg base_ref "$default_branch" '
+                   .pr_number == $pull_number
+                   and .head_sha == $head_sha
+                   and .base_ref == $base_ref
+                   and (.maintainer_changes == false)
+                   and (.dependency_names | type == "string" and length > 0)
+                 ' "${policy_files[0]:-/dev/null}" >/dev/null; then
+              set_policy_label "$pull_number" "$manual_label"
+              echo "PR #$pull_number supplied invalid policy evidence"
+              continue
+            fi
+
+            policy_file="${policy_files[0]}"
+            update_type=$(jq -er '.update_type' "$policy_file")
+            if [[ ! "$update_type" =~ ^version-update:semver-(minor|patch)$ ]]; then
+              set_policy_label "$pull_number" "$manual_label"
+              echo "PR #$pull_number is $update_type and remains manual-review only"
+              continue
+            fi
+
+            if [[ "$base_sha" != "$default_sha" ]]; then
+              set_policy_label "$pull_number" "$rebase_label"
+              cutoff=$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+              marker="<!-- rule-bot-automerge-rebase:$head_sha:$default_sha -->"
+              request_dependabot_command "$pull_number" \
+                'dependabot rebase' "$marker" "$cutoff"
+              echo "PR #$pull_number must be rebased from $base_sha onto $default_sha"
+              exit 0
+            fi
+            set_policy_label "$pull_number" "$automerge_label"
+
+            gates_ok=true
+            for workflow in 'Classify Dependabot Updates' \
+                            'Build and Push Docker Image' CodeQL; do
+              run=$(jq -c \
+                --arg workflow "$workflow" \
+                --arg sha "$head_sha" \
+                --argjson pull_number "$pull_number" '
+                  [.workflow_runs[]
+                    | select(.name == $workflow and .head_sha == $sha)
+                    | select(any(.pull_requests[]?; .number == $pull_number))]
+                  | sort_by(.id)
+                  | last // null
+                ' <<<"$runs")
+              if [[ "$run" == null ]]; then
+                echo "PR #$pull_number has no $workflow gate for $head_sha"
+                exit 0
+              fi
+
+              status=$(jq -r '.status' <<<"$run")
+              conclusion=$(jq -r '.conclusion // ""' <<<"$run")
+              if [[ "$status" != completed ]]; then
+                echo "PR #$pull_number is still running $workflow for $head_sha"
+                exit 0
+              fi
+              if [[ "$conclusion" != success ]]; then
+                run_id=$(jq -r '.id' <<<"$run")
+                run_attempt=$(jq -r '.run_attempt // 1' <<<"$run")
+                if [[ "$conclusion" =~ ^(failure|cancelled|timed_out|startup_failure|stale)$ ]] &&
+                   (( run_attempt < 3 )); then
+                  rerun_gate "$run_id" "$conclusion"
+                  echo "Re-running failed $workflow gate $run_id for PR #$pull_number (attempt $((run_attempt + 1))/3)"
+                  exit 0
+                fi
+                set_policy_label "$pull_number" "$manual_label"
+                echo "PR #$pull_number failed $workflow after $run_attempt attempt(s): $conclusion"
+                gates_ok=false
+                break
+              fi
+            done
+            [[ "$gates_ok" == true ]] || continue
+
+            required=(
+              classify
+              validate
+              build-and-push
+              'analyze (actions)'
+              'analyze (python)'
+              CodeQL
+            )
+            ready=false
+            for _ in {1..24}; do
+              check_runs=$(gh api \
+                "repos/$REPOSITORY/commits/$head_sha/check-runs?filter=latest&per_page=100")
+              missing=()
+              for check_name in "${required[@]}"; do
+                if ! jq -e \
+                  --arg name "$check_name" '
+                    any(.check_runs[];
+                      .name == $name
+                      and .status == "completed"
+                      and .conclusion == "success"
+                    )
+                  ' <<<"$check_runs" >/dev/null; then
+                  missing+=("$check_name")
+                fi
+              done
+              if [[ ${#missing[@]} -eq 0 ]]; then
+                ready=true
+                break
+              fi
+              echo "Waiting for PR #$pull_number checks: ${missing[*]}"
+              sleep 15
+            done
+            if [[ "$ready" != true ]]; then
+              echo "PR #$pull_number did not complete every required check" >&2
               exit 1
             fi
 
-            missing=()
-            for name in "${required[@]}"; do
-              if ! jq -e --arg name "$name" '
-                any(.[];
-                  .name == $name
-                  and .status == "completed"
-                  and .conclusion == "success"
-                )
+            latest=$(gh api "repos/$REPOSITORY/pulls/$pull_number")
+            latest_default_sha=$(gh api \
+              "repos/$REPOSITORY/commits/$default_branch" --jq '.sha')
+            if [[ $(jq -r '.base.sha' <<<"$latest") != "$latest_default_sha" ]]; then
+              set_policy_label "$pull_number" "$rebase_label"
+              cutoff=$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+              marker="<!-- rule-bot-automerge-rebase:$head_sha:$latest_default_sha -->"
+              request_dependabot_command "$pull_number" \
+                'dependabot rebase' "$marker" "$cutoff"
+              echo "PR #$pull_number became stale immediately before merge"
+              exit 0
+            fi
+            if ! jq -e \
+              --arg author "$author" \
+              --arg base_ref "$default_branch" \
+              --arg head_repo "$REPOSITORY" \
+              --arg head_sha "$head_sha" '
+                .state == "open"
+                and (.draft | not)
+                and .user.login == $author
+                and .base.ref == $base_ref
+                and .head.repo.full_name == $head_repo
+                and .head.sha == $head_sha
+                and .mergeable == true
               ' <<<"$latest" >/dev/null; then
-                missing+=("$name")
+              echo "PR #$pull_number changed or is no longer mergeable; deferring"
+              exit 0
+            fi
+
+            commit_title="$title (#$pull_number)"
+            if ! merged=$(gh api --method PUT \
+              "repos/$REPOSITORY/pulls/$pull_number/merge" \
+              -f merge_method=squash \
+              -f sha="$head_sha" \
+              -f commit_title="$commit_title" 2>&1); then
+              echo "Merge of PR #$pull_number was deferred: $merged" >&2
+              exit 0
+            fi
+            jq -e '.merged == true and .sha != null' <<<"$merged" >/dev/null
+            merged_sha=$(jq -er '.sha' <<<"$merged")
+
+            # GITHUB_TOKEN merges do not emit ordinary push-triggered runs.
+            dispatched_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            gh workflow run docker-build.yml --repo "$REPOSITORY" \
+              --ref "$default_branch"
+            gh workflow run codeql.yml --repo "$REPOSITORY" \
+              --ref "$default_branch"
+
+            find_run() {
+              local workflow_file="$1"
+              gh api \
+                "repos/$REPOSITORY/actions/workflows/$workflow_file/runs?event=workflow_dispatch&branch=$default_branch&per_page=20" \
+                | jq -r \
+                  --arg sha "$merged_sha" \
+                  --arg dispatched_at "$dispatched_at" '
+                    [.workflow_runs[]
+                      | select(
+                          .head_sha == $sha
+                          and .created_at >= $dispatched_at
+                        )]
+                    | sort_by(.created_at)
+                    | last
+                    | .id // empty
+                  '
+            }
+
+            docker_run=""
+            codeql_run=""
+            for _ in {1..24}; do
+              [[ -n "$docker_run" ]] || docker_run=$(find_run docker-build.yml)
+              [[ -n "$codeql_run" ]] || codeql_run=$(find_run codeql.yml)
+              if [[ -n "$docker_run" && -n "$codeql_run" ]]; then
+                break
               fi
+              sleep 5
             done
-            if [[ "${#missing[@]}" -eq 0 ]]; then
-              ready=true
-              break
-            fi
-            echo "waiting for checks: ${missing[*]}"
-            sleep 15
+            [[ -n "$docker_run" ]]
+            [[ -n "$codeql_run" ]]
+
+            gh run watch "$docker_run" --repo "$REPOSITORY" --exit-status
+            gh run watch "$codeql_run" --repo "$REPOSITORY" --exit-status
+            for run_id in "$docker_run" "$codeql_run"; do
+              gh run view "$run_id" --repo "$REPOSITORY" \
+                --json event,headSha,conclusion \
+                | jq -e \
+                  --arg sha "$merged_sha" '
+                    .event == "workflow_dispatch"
+                    and .headSha == $sha
+                    and .conclusion == "success"
+                  ' >/dev/null
+            done
+
+            final_pull=$(gh api "repos/$REPOSITORY/pulls/$pull_number")
+            jq -e \
+              --arg sha "$merged_sha" '
+                .state == "closed"
+                and .merged == true
+                and .merge_commit_sha == $sha
+              ' <<<"$final_pull" >/dev/null
+
+            {
+              echo "### Dependabot merge completed"
+              echo
+              echo "- Pull request: #$pull_number"
+              echo "- Validated head: \`$head_sha\`"
+              echo "- Squash commit: \`$merged_sha\`"
+              echo "- Docker publication run: \`$docker_run\`"
+              echo "- CodeQL run: \`$codeql_run\`"
+            } >>"$GITHUB_STEP_SUMMARY"
+            echo "Merged PR #$pull_number as $merged_sha and verified post-merge workflows"
+            exit 0
           done
-          [[ "$ready" == true ]]
-          gh pr checks "$PR_NUMBER" --repo "$GH_REPO" --watch --fail-fast
 
-      - name: Merge the exact validated revision
-        id: merge
-        if: steps.policy.outputs.eligible == 'true' && steps.live.outputs.current == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ steps.policy.outputs.pr_number }}
-          EXPECTED_HEAD_SHA: ${{ steps.policy.outputs.head_sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          pr="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")"
-          master_sha="$(gh api "repos/$GH_REPO/git/ref/heads/master" --jq '.object.sha')"
-          jq -e \
-            --arg expected_head "$EXPECTED_HEAD_SHA" \
-            --arg expected_base "$master_sha" '
-              .state == "open"
-              and .user.login == "dependabot[bot]"
-              and .head.sha == $expected_head
-              and .base.sha == $expected_base
-              and .mergeable == true
-            ' <<<"$pr" >/dev/null
-
-          gh pr merge "$PR_NUMBER" --repo "$GH_REPO" --merge --delete-branch
-          merged="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")"
-          jq -e '.merged == true and .merge_commit_sha != null' <<<"$merged" >/dev/null
-          merged_sha="$(jq -er '.merge_commit_sha' <<<"$merged")"
-          echo "merged_sha=$merged_sha" >> "$GITHUB_OUTPUT"
-
-      - name: Dispatch post-merge publication and CodeQL
-        id: dispatch
-        if: steps.merge.outputs.merged_sha != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          dispatched_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          gh workflow run docker-build.yml --ref master --repo "$GH_REPO"
-          gh workflow run codeql.yml --ref master --repo "$GH_REPO"
-          echo "dispatched_at=$dispatched_at" >> "$GITHUB_OUTPUT"
-
-      - name: Verify post-merge workflows
-        if: steps.merge.outputs.merged_sha != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          MERGED_SHA: ${{ steps.merge.outputs.merged_sha }}
-          DISPATCHED_AT: ${{ steps.dispatch.outputs.dispatched_at }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          find_run() {
-            local workflow="$1"
-            gh api \
-              "repos/$GH_REPO/actions/workflows/$workflow/runs?event=workflow_dispatch&branch=master&per_page=20" \
-              | jq -r \
-                --arg sha "$MERGED_SHA" \
-                --arg dispatched_at "$DISPATCHED_AT" '
-                  [
-                    .workflow_runs[]
-                    | select(
-                        .head_sha == $sha
-                        and .created_at >= $dispatched_at
-                      )
-                  ]
-                  | sort_by(.created_at)
-                  | last
-                  | .id // empty
-                '
-          }
-
-          docker_run=""
-          codeql_run=""
-          for attempt in {1..24}; do
-            [[ -n "$docker_run" ]] || docker_run="$(find_run docker-build.yml)"
-            [[ -n "$codeql_run" ]] || codeql_run="$(find_run codeql.yml)"
-            if [[ -n "$docker_run" && -n "$codeql_run" ]]; then
-              break
-            fi
-            sleep 5
-          done
-          test -n "$docker_run"
-          test -n "$codeql_run"
-
-          gh run watch "$docker_run" --repo "$GH_REPO" --exit-status
-          gh run watch "$codeql_run" --repo "$GH_REPO" --exit-status
-          for run_id in "$docker_run" "$codeql_run"; do
-            gh run view "$run_id" --repo "$GH_REPO" \
-              --json event,headSha,conclusion \
-              | jq -e \
-                --arg sha "$MERGED_SHA" '
-                  .event == "workflow_dispatch"
-                  and .headSha == $sha
-                  and .conclusion == "success"
-                ' >/dev/null
-          done
+          echo "No fully validated Dependabot PR is ready to merge"

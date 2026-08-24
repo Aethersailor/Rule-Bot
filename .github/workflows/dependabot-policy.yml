@@ -55,4 +55,4 @@ jobs:
           name: dependabot-policy-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
           path: ${{ runner.temp }}/dependabot-policy/policy.json
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7

@@ -160,6 +160,9 @@ jobs:
           ensure_label "$automerge_label" "0e8a16" \
             "Minor, patch, or digest-only Dependabot update eligible for automatic merge" \
             "$repository_labels"
+          ensure_label "$rebase_label" "fbca04" \
+            "Dependabot update must be rebased onto the current default branch" \
+            "$repository_labels"
           ensure_label "$manual_label" "d93f0b" \
             "Dependabot update requires manual review" "$repository_labels"
 
@@ -329,6 +332,11 @@ jobs:
               set_policy_label "$pull_number" "$manual_label"
               echo "PR #$pull_number has a non-standard Dependabot title"
               continue
+            fi
+            if [[ "$base_sha" != "$default_sha" ]]; then
+              set_policy_label "$pull_number" "$rebase_label"
+              echo "PR #$pull_number is based on $base_sha instead of $default_sha; waiting for Dependabot to rebase"
+              exit 0
             fi
 
             commits=$(api_get \

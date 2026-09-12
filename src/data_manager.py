@@ -25,6 +25,7 @@ from .utils.memory import trim_memory
 
 MAX_DOWNLOAD_BYTES = {
     "geoip": 64 * 1024 * 1024,
+    "geoip_baseline": 64 * 1024 * 1024,
     "cn_ipv4": 16 * 1024 * 1024,
     "geosite": 64 * 1024 * 1024,
 }
@@ -53,9 +54,13 @@ class DataManager:
         self.data_dir = self._resolve_data_dir()
         logger.info("数据目录: {}", self.data_dir)
         self.geoip_file = self.data_dir / "geoip" / "Country-without-asn.mmdb"
+        self.geoip_baseline_file = self.data_dir / "geoip" / "GeoLite2-Country.mmdb"
         self.cn_ipv4_file = self.data_dir / "geoip" / "cn-ipv4.txt"
         self.geosite_file = self.data_dir / "geosite" / "direct-list.txt"
         self.geoip_meta = self.geoip_file.with_suffix(self.geoip_file.suffix + ".meta.json")
+        self.geoip_baseline_meta = self.geoip_baseline_file.with_suffix(
+            self.geoip_baseline_file.suffix + ".meta.json"
+        )
         self.cn_ipv4_meta = self.cn_ipv4_file.with_suffix(self.cn_ipv4_file.suffix + ".meta.json")
         self.geosite_meta = self.geosite_file.with_suffix(self.geosite_file.suffix + ".meta.json")
         
@@ -159,6 +164,12 @@ class DataManager:
                 ),
                 asyncio.to_thread(
                     self._inspect_existing_data,
+                    self.geoip_baseline_file,
+                    "geoip_baseline",
+                    self.geoip_baseline_meta,
+                ),
+                asyncio.to_thread(
+                    self._inspect_existing_data,
                     self.cn_ipv4_file,
                     "cn_ipv4",
                     self.cn_ipv4_meta,
@@ -173,7 +184,8 @@ class DataManager:
             existing_valid = {
                 label: inspection[0]
                 for label, inspection in zip(
-                    ("geoip", "cn_ipv4", "geosite"), inspections
+                    ("geoip", "geoip_baseline", "cn_ipv4", "geosite"),
+                    inspections,
                 )
             }
             need_geoip = not existing_valid["geoip"] or self._is_file_outdated(
@@ -183,6 +195,12 @@ class DataManager:
             need_cn_ipv4 = not existing_valid["cn_ipv4"] or self._is_file_outdated(
                 self.cn_ipv4_file,
                 self.config.DATA_UPDATE_INTERVAL
+            )
+            need_geoip_baseline = not existing_valid[
+                "geoip_baseline"
+            ] or self._is_file_outdated(
+                self.geoip_baseline_file,
+                self.config.DATA_UPDATE_INTERVAL,
             )
             need_geosite = not existing_valid["geosite"] or self._is_file_outdated(
                 self.geosite_file,
@@ -195,6 +213,10 @@ class DataManager:
                 logger.info("下载 GeoIP 数据...")
                 labels.append(("geoip", self.geoip_file))
                 requests.append(self._download_geoip())
+            if need_geoip_baseline:
+                logger.info("下载 GeoIP 严格基线数据...")
+                labels.append(("geoip_baseline", self.geoip_baseline_file))
+                requests.append(self._download_geoip_baseline())
             if need_cn_ipv4:
                 logger.info("下载中国 IPv4 CIDR 数据...")
                 labels.append(("cn_ipv4", self.cn_ipv4_file))
@@ -204,7 +226,12 @@ class DataManager:
                 labels.append(("geosite", self.geosite_file))
                 requests.append(self._download_geosite())
 
-            changes = {"geoip": False, "cn_ipv4": False, "geosite": False}
+            changes = {
+                "geoip": False,
+                "geoip_baseline": False,
+                "cn_ipv4": False,
+                "geosite": False,
+            }
             if requests:
                 results = await asyncio.gather(*requests, return_exceptions=True)
                 missing_failures = []
@@ -212,6 +239,15 @@ class DataManager:
                     if isinstance(result, BaseException):
                         if existing_valid[label]:
                             logger.warning("{} 更新失败，继续使用现有数据: {}", label, result)
+                        elif label == "geoip_baseline":
+                            # The service can safely start without the optional
+                            # baseline: strict NS-only admission then fails
+                            # closed until a scheduled refresh succeeds.
+                            logger.warning(
+                                "{} 初始下载失败，NS 严格判定暂不可用: {}",
+                                label,
+                                result,
+                            )
                         else:
                             missing_failures.append(f"{label}: {result}")
                     else:
@@ -220,12 +256,18 @@ class DataManager:
                     raise RuntimeError("; ".join(missing_failures))
 
             geoip_changed = changes["geoip"]
+            geoip_baseline_changed = changes["geoip_baseline"]
             cn_ipv4_changed = changes["cn_ipv4"]
             geosite_changed = changes["geosite"]
             
             # 加载 GeoSite 数据到内存
             await self._load_geosite_data(force=True)
-            if geosite_changed or geoip_changed or cn_ipv4_changed:
+            if (
+                geosite_changed
+                or geoip_changed
+                or geoip_baseline_changed
+                or cn_ipv4_changed
+            ):
                 trim_memory("初始化后内存修剪")
             
         except Exception as e:
@@ -314,6 +356,19 @@ class DataManager:
             
         except Exception as e:
             logger.error(f"GeoSite 数据加载失败: {e}")
+            raise
+
+    async def _download_geoip_baseline(self):
+        """下载用于 NS 严格判定的官方 GeoLite2 国家基线。"""
+        try:
+            return await self._download_with_fallback(
+                self.config.GEOIP_BASELINE_URLS,
+                self.geoip_baseline_file,
+                "geoip_baseline",
+                self.geoip_baseline_meta,
+            )
+        except Exception as e:
+            logger.error(f"GeoIP 严格基线数据下载失败: {e}")
             raise
 
     def _parse_geosite_file(
@@ -464,11 +519,17 @@ class DataManager:
             # 数据源彼此独立；单个源失败不应阻止其他数据更新。
             results = await asyncio.gather(
                 self._download_geoip(),
+                self._download_geoip_baseline(),
                 self._download_cn_ipv4(),
                 self._download_geosite(),
                 return_exceptions=True,
             )
-            changes = {"geoip": False, "cn_ipv4": False, "geosite": False}
+            changes = {
+                "geoip": False,
+                "geoip_baseline": False,
+                "cn_ipv4": False,
+                "geosite": False,
+            }
             for label, result in zip(changes, results):
                 if isinstance(result, BaseException):
                     logger.warning("{} 定时更新失败，保留现有数据: {}", label, result)
@@ -476,6 +537,7 @@ class DataManager:
                     changes[label] = bool(result)
 
             geoip_changed = changes["geoip"]
+            geoip_baseline_changed = changes["geoip_baseline"]
             cn_ipv4_changed = changes["cn_ipv4"]
             geosite_changed = changes["geosite"]
             
@@ -483,7 +545,7 @@ class DataManager:
             if geosite_changed:
                 await self._load_geosite_data()
                 trim_memory("geosite 更新后内存修剪")
-            elif geoip_changed or cn_ipv4_changed:
+            elif geoip_changed or geoip_baseline_changed or cn_ipv4_changed:
                 trim_memory("数据更新后内存修剪")
 
             await self._notify_updates(changes)
@@ -543,7 +605,7 @@ class DataManager:
     @staticmethod
     def _validate_download(path: Path, label: str) -> int:
         """Reject truncated or wrong-content upstream responses before replace."""
-        if label == "geoip":
+        if label in {"geoip", "geoip_baseline"}:
             size = path.stat().st_size
             if size < 100_000:
                 raise ValueError("GeoIP 文件过小")

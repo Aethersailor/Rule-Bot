@@ -44,6 +44,7 @@ class DNSService:
         self.ns_doh_servers = ns_doh_servers or doh_servers
         self.session: Optional[aiohttp.ClientSession] = None
         self._a_cache = TTLCache(cache_size, cache_ttl)
+        self._a_evidence_cache = TTLCache(cache_size, cache_ttl)
         self._ns_cache = TTLCache(ns_cache_size, ns_cache_ttl)
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._conn_limit = conn_limit
@@ -149,6 +150,77 @@ class DNSService:
                 success=False
             )
             return []
+
+    async def query_a_record_evidence(
+        self,
+        domain: str,
+        use_edns_china: bool = True,
+    ) -> Dict[str, List[str]]:
+        """Collect non-empty A answers from every configured DoH resolver.
+
+        Admission decisions need resolver agreement. The regular lookup keeps
+        its latency-optimized first-success behavior for compatibility.
+        """
+        cache_key = (domain, use_edns_china)
+        cached = self._a_evidence_cache.get(cache_key)
+        if cached is not None:
+            METRICS.inc("dns.cache.a_evidence.hit")
+            return cached
+        METRICS.inc("dns.cache.a_evidence.miss")
+        start_ts = time.perf_counter()
+
+        try:
+            if not self.session or self.session.closed:
+                await self.start()
+            query_data = self._build_dns_query(domain, use_edns_china)
+            if not query_data:
+                return {}
+
+            names = list(self.doh_servers)
+            tasks = [
+                asyncio.create_task(
+                    self._perform_doh_query(
+                        name,
+                        self.doh_servers[name],
+                        query_data,
+                        self._parse_dns_response_a,
+                    )
+                )
+                for name in names
+            ]
+            responses = await asyncio.gather(*tasks, return_exceptions=True)
+            evidence = {
+                name: list(dict.fromkeys(response))
+                for name, response in zip(names, responses)
+                if isinstance(response, list) and response
+            }
+            if evidence:
+                self._a_evidence_cache.set(cache_key, evidence)
+                METRICS.record_request(
+                    "dns.query_a_evidence",
+                    (time.perf_counter() - start_ts) * 1000,
+                    success=True,
+                )
+                return evidence
+
+            METRICS.record_request(
+                "dns.query_a_evidence",
+                (time.perf_counter() - start_ts) * 1000,
+                success=False,
+            )
+            return {}
+        except Exception as e:
+            logger.debug(
+                "DoH 多解析器证据查询失败，domain_ref={}，error_type={}",
+                log_reference(domain),
+                type(e).__name__,
+            )
+            METRICS.record_request(
+                "dns.query_a_evidence",
+                (time.perf_counter() - start_ts) * 1000,
+                success=False,
+            )
+            return {}
     
     async def query_ns_records(self, domain: str) -> List[str]:
         """查询 NS 记录，返回权威域名服务器列表（并发查询）"""

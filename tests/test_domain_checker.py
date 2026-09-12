@@ -98,6 +98,86 @@ class DummyGeoIPServiceMixed:
         }
 
 
+class DummyDNSServiceNSConsensus:
+    doh_servers = {
+        "resolver-1": "https://resolver-1.example/dns-query",
+        "resolver-2": "https://resolver-2.example/dns-query",
+    }
+
+    async def query_a_record(self, domain: str, use_edns_china: bool = True):
+        if domain == "example.com":
+            return ["8.8.8.8"]
+        return []
+
+    async def query_a_record_evidence(
+        self, domain: str, use_edns_china: bool = True
+    ):
+        addresses = {
+            "ns1.example.net": "1.1.1.1",
+            "ns2.example.net": "2.2.2.2",
+            "ns3.example.net": "8.8.8.8",
+        }
+        ip = addresses.get(domain)
+        if not ip:
+            return {}
+        return {
+            "resolver-1": [ip],
+            "resolver-2": [ip],
+        }
+
+    async def query_ns_records(self, domain: str):
+        return [
+            "ns1.example.net",
+            "ns2.example.net",
+            "ns3.example.net",
+        ]
+
+
+class DummyGeoIPServiceStrictConsensus(DummyGeoIPServiceNoChina):
+    def get_location_info(self, ip: str):
+        if ip in {"1.1.1.1", "2.2.2.2"}:
+            return {
+                "ip": ip,
+                "country_code": "CN",
+                "country_name": "China",
+                "is_china": True,
+            }
+        return super().get_location_info(ip)
+
+    def is_strict_china_ip(self, ip: str):
+        return ip in {"1.1.1.1", "2.2.2.2"}
+
+
+class DummyDNSServiceOathLike(DummyDNSServiceNSConsensus):
+    async def query_a_record_evidence(
+        self, domain: str, use_edns_china: bool = True
+    ):
+        index = int(domain[2]) if domain.startswith("ns") else 0
+        ip = "202.165.97.53" if index == 5 else f"203.0.113.{index}"
+        return {
+            "resolver-1": [ip],
+            "resolver-2": [ip],
+        }
+
+    async def query_ns_records(self, domain: str):
+        return [f"ns{index}.example.net" for index in range(1, 9)]
+
+
+class DummyGeoIPServiceOathLike(DummyGeoIPServiceNoChina):
+    def get_location_info(self, ip: str):
+        if ip == "202.165.97.53":
+            return {
+                "ip": ip,
+                "country_code": "CN",
+                "country_name": "China",
+                "is_china": True,
+            }
+        return super().get_location_info(ip)
+
+    def is_strict_china_ip(self, ip: str):
+        return False
+
+
 class DummyDNSServiceUnavailable:
     async def query_a_record(self, domain: str, use_edns_china: bool = True):
         return []
@@ -155,9 +235,41 @@ class TestDomainChecker(unittest.IsolatedAsyncioTestCase):
         result = await checker.check_domain_comprehensive("example.org")
         duration = time.perf_counter() - start
 
-        self.assertTrue(result["ns_china_status"])
-        self.assertIn("NS 服务器: 1/2 个 IP 在中国大陆", result["details"])
+        self.assertFalse(result["ns_china_status"])
+        self.assertIn("NS 严格判定: 1/2 个主机在中国大陆", result["details"])
         self.assertLess(duration, 0.09)
+
+    async def test_ns_cluster_quorum_can_authorize_foreign_domain_ip(self):
+        checker = DomainChecker(
+            DummyDNSServiceNSConsensus(),
+            DummyGeoIPServiceStrictConsensus(),
+        )
+
+        result = await checker.check_domain_comprehensive("example.com")
+
+        self.assertFalse(result["domain_china_status"])
+        self.assertTrue(result["ns_china_status"])
+        self.assertEqual(result["ns_china_hosts"], 2)
+        self.assertEqual(result["ns_resolved_hosts"], 3)
+        self.assertTrue(checker.should_add_directly(result))
+        self.assertFalse(checker.should_reject(result))
+        self.assertEqual(checker.get_target_domain_to_add(result), "example.com")
+
+    async def test_single_conflicting_ns_ip_cannot_authorize_domain(self):
+        checker = DomainChecker(
+            DummyDNSServiceOathLike(),
+            DummyGeoIPServiceOathLike(),
+        )
+
+        result = await checker.check_domain_comprehensive("example.com")
+
+        self.assertFalse(result["domain_china_status"])
+        self.assertFalse(result["ns_china_status"])
+        self.assertEqual(result["ns_china_hosts"], 0)
+        self.assertEqual(result["ns_conflict_hosts"], 1)
+        self.assertTrue(checker.should_reject(result))
+        self.assertIsNone(checker.get_target_domain_to_add(result))
+        self.assertIn("NS 归属数据冲突: 1 个主机", result["details"])
 
     async def test_empty_dns_result_is_unknown_not_foreign(self):
         checker = DomainChecker(DummyDNSServiceUnavailable(), DummyGeoIPServiceNoChina())
@@ -195,6 +307,37 @@ class TestDomainChecker(unittest.IsolatedAsyncioTestCase):
 
 
 class TestDNSResolutionClassification(unittest.IsolatedAsyncioTestCase):
+    async def test_a_record_evidence_collects_and_caches_all_resolvers(self):
+        service = DNSService(
+            {
+                "resolver-1": "https://resolver-1.example/dns-query",
+                "resolver-2": "https://resolver-2.example/dns-query",
+                "resolver-3": "https://resolver-3.example/dns-query",
+            }
+        )
+        service.start = AsyncMock()
+        service._build_dns_query = lambda *_args, **_kwargs: b"query"
+        service._perform_doh_query = AsyncMock(
+            side_effect=[
+                ["1.1.1.1"],
+                ["2.2.2.2"],
+                RuntimeError("resolver unavailable"),
+            ]
+        )
+
+        first = await service.query_a_record_evidence("example.com")
+        second = await service.query_a_record_evidence("example.com")
+
+        self.assertEqual(
+            first,
+            {
+                "resolver-1": ["1.1.1.1"],
+                "resolver-2": ["2.2.2.2"],
+            },
+        )
+        self.assertEqual(second, first)
+        self.assertEqual(service._perform_doh_query.await_count, 3)
+
     async def classify(self, doh_statuses, system_status):
         service = DNSService(
             {f"resolver-{index}": f"https://resolver-{index}.example/dns-query"

@@ -57,7 +57,8 @@ class HandlerManager:
             str(data_manager.geoip_file),
             str(data_manager.cn_ipv4_file),
             cache_size=config.GEOIP_CACHE_SIZE,
-            cache_ttl=config.GEOIP_CACHE_TTL
+            cache_ttl=config.GEOIP_CACHE_TTL,
+            baseline_geoip_file_path=str(data_manager.geoip_baseline_file),
         )
         self.github_service = GitHubService(config)
         self.domain_checker = DomainChecker(self.dns_service, self.geoip_service)
@@ -106,7 +107,11 @@ class HandlerManager:
             self.github_service.close()
 
     async def _handle_data_update(self, changes: Dict[str, bool]) -> None:
-        if changes.get("geoip") or changes.get("cn_ipv4"):
+        if (
+            changes.get("geoip")
+            or changes.get("geoip_baseline")
+            or changes.get("cn_ipv4")
+        ):
             self.geoip_service.reload()
 
     async def _announce_private_addition(

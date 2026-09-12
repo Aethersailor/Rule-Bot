@@ -155,6 +155,15 @@ class Config:
             "https://testingcf.jsdelivr.net/gh/Aethersailor/geoip@release/Country-without-asn.mmdb",
             "https://raw.githubusercontent.com/Aethersailor/geoip/release/Country-without-asn.mmdb",
         ]
+        # Keep the upstream GeoLite2 country view as an independent, conservative
+        # baseline for high-impact NS-only admission decisions. The regular
+        # multi-source database remains authoritative for existing domain-IP
+        # behavior and display details.
+        self.GEOIP_BASELINE_URLS = [
+            "https://gcore.jsdelivr.net/gh/Aethersailor/geoip@release/GeoLite2-Country.mmdb",
+            "https://testingcf.jsdelivr.net/gh/Aethersailor/geoip@release/GeoLite2-Country.mmdb",
+            "https://raw.githubusercontent.com/Aethersailor/geoip/release/GeoLite2-Country.mmdb",
+        ]
         self.CN_IPV4_URLS = [
             "https://raw.githubusercontent.com/Aethersailor/geoip/refs/heads/release/text/cn-ipv4.txt",
             "https://gcore.jsdelivr.net/gh/Aethersailor/geoip@release/text/cn-ipv4.txt",

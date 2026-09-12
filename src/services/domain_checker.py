@@ -15,6 +15,11 @@ from ..utils.privacy import log_reference
 
 class DomainChecker:
     """域名检查器"""
+
+    NS_MIN_RESOLVER_ANSWERS = 2
+    NS_MIN_CHINA_HOSTS = 2
+    NS_CHINA_QUORUM_NUMERATOR = 2
+    NS_CHINA_QUORUM_DENOMINATOR = 3
     
     def __init__(self, dns_service: DNSService, geoip_service: GeoIPService):
         self.dns_service = dns_service
@@ -39,6 +44,11 @@ class DomainChecker:
                 "second_level_ips": [],
                 "ns_servers": [],
                 "ns_ips": [],
+                "ns_resolved_hosts": 0,
+                "ns_china_hosts": 0,
+                "ns_mixed_hosts": 0,
+                "ns_conflict_hosts": 0,
+                "ns_incomplete_hosts": 0,
                 "domain_china_status": False,
                 "second_level_china_status": False,
                 "ns_china_status": False,
@@ -127,46 +137,123 @@ class DomainChecker:
             
             # 检查 NS 服务器 IP 归属地
             if ns_servers:
-                china_ns_count = 0
-                total_ns_count = 0
-                ns_summary = {}  # {ns_server: {"china": count, "foreign": count}}
+                configured_resolvers = len(
+                    getattr(self.dns_service, "doh_servers", {}) or {}
+                )
+                required_resolvers = min(
+                    self.NS_MIN_RESOLVER_ANSWERS,
+                    max(1, configured_resolvers),
+                )
+                ns_summary = {}
                 
-                ns_ip_results = await asyncio.gather(
-                    *(self.dns_service.query_a_record(ns) for ns in ns_servers)
+                ns_evidence_results = await asyncio.gather(
+                    *(self._query_ns_address_evidence(ns) for ns in ns_servers)
                 )
 
-                for ns, ns_ips in zip(ns_servers, ns_ip_results):
+                for ns, evidence in zip(ns_servers, ns_evidence_results):
+                    usable_evidence = {
+                        resolver: ips
+                        for resolver, ips in evidence.items()
+                        if isinstance(ips, list) and ips
+                    }
+                    ns_ips = list(
+                        dict.fromkeys(
+                            ip
+                            for ips in usable_evidence.values()
+                            for ip in ips
+                        )
+                    )
                     result["ns_ips"].extend(ns_ips)
-                    
-                    ns_summary[ns] = {"china": 0, "foreign": 0, "ips": []}
-                    
+                    summary = {
+                        "china": 0,
+                        "foreign": 0,
+                        "conflict": 0,
+                        "ips": [],
+                        "resolver_answers": len(usable_evidence),
+                    }
+                    ns_summary[ns] = summary
+
+                    if len(usable_evidence) < required_resolvers:
+                        result["ns_incomplete_hosts"] += 1
+                        continue
+
+                    result["ns_resolved_hosts"] += 1
                     for ip in ns_ips:
                         location = self.geoip_service.get_location_info(ip)
-                        ns_summary[ns]["ips"].append({"ip": ip, "country": location['country_name']})
-                        total_ns_count += 1
-                        
-                        if location["is_china"]:
-                            china_ns_count += 1
-                            ns_summary[ns]["china"] += 1
+                        summary["ips"].append(
+                            {"ip": ip, "country": location["country_name"]}
+                        )
+                        if self._is_strict_china_ip(ip, location):
+                            summary["china"] += 1
+                        elif location["is_china"]:
+                            summary["conflict"] += 1
                         else:
-                            ns_summary[ns]["foreign"] += 1
-                
-                # 生成简洁的 NS 摘要信息
-                if china_ns_count > 0:
-                    result["ns_china_status"] = True
-                    result["details"].append(f"NS 服务器: {china_ns_count}/{total_ns_count} 个 IP 在中国大陆")
-                else:
-                    result["details"].append(f"NS 服务器: 0/{total_ns_count} 个 IP 在中国大陆")
+                            summary["foreign"] += 1
+
+                    if summary["china"] == len(ns_ips) and ns_ips:
+                        result["ns_china_hosts"] += 1
+                    elif summary["china"] > 0:
+                        result["ns_mixed_hosts"] += 1
+                    elif summary["conflict"] > 0:
+                        result["ns_conflict_hosts"] += 1
+
+                resolved_hosts = result["ns_resolved_hosts"]
+                china_hosts = result["ns_china_hosts"]
+                evidence_complete = (
+                    result["ns_incomplete_hosts"] == 0
+                    and resolved_hosts == len(ns_servers)
+                )
+                has_cluster_quorum = (
+                    china_hosts >= self.NS_MIN_CHINA_HOSTS
+                    and china_hosts * self.NS_CHINA_QUORUM_DENOMINATOR
+                    >= resolved_hosts * self.NS_CHINA_QUORUM_NUMERATOR
+                    and result["ns_mixed_hosts"] == 0
+                    and result["ns_conflict_hosts"] == 0
+                )
+                result["ns_china_status"] = bool(
+                    evidence_complete and resolved_hosts and has_cluster_quorum
+                )
+
+                result["details"].append(
+                    "NS 严格判定: "
+                    f"{china_hosts}/{resolved_hosts} 个主机在中国大陆"
+                )
+                if result["ns_conflict_hosts"]:
+                    result["details"].append(
+                        "NS 归属数据冲突: "
+                        f"{result['ns_conflict_hosts']} 个主机"
+                    )
+                if result["ns_mixed_hosts"]:
+                    result["details"].append(
+                        "NS 国内外地址混合: "
+                        f"{result['ns_mixed_hosts']} 个主机"
+                    )
+                if result["ns_incomplete_hosts"]:
+                    result["details"].append(
+                        "NS 多解析器证据不足: "
+                        f"{result['ns_incomplete_hosts']} 个主机"
+                    )
                 
                 # 添加详细的 NS 服务器信息（handler 会统一添加 • 符号）
                 for ns, summary in ns_summary.items():
                     china_count = summary["china"]
                     foreign_count = summary["foreign"]
-                    # 优化显示：有中国 IP 显示完整信息，无海外 IP 时不显示 0
-                    if china_count > 0 and foreign_count > 0:
-                        result["details"].append(f"{ns}: {china_count} 个中国 IP + {foreign_count} 个海外 IP")
+                    conflict_count = summary["conflict"]
+                    if summary["resolver_answers"] < required_resolvers:
+                        result["details"].append(f"{ns}: 多解析器证据不足")
+                    elif conflict_count:
+                        result["details"].append(
+                            f"{ns}: {conflict_count} 个归属冲突 IP"
+                        )
+                    elif china_count > 0 and foreign_count > 0:
+                        result["details"].append(
+                            f"{ns}: {china_count} 个严格中国 IP + "
+                            f"{foreign_count} 个海外 IP"
+                        )
                     elif china_count > 0:
-                        result["details"].append(f"{ns}: {china_count} 个中国 IP")
+                        result["details"].append(
+                            f"{ns}: {china_count} 个严格中国 IP"
+                        )
                     else:
                         result["details"].append(f"{ns}: {foreign_count} 个海外 IP")
             else:
@@ -219,6 +306,27 @@ class DomainChecker:
                 type(e).__name__,
             )
             return {"error": f"域名检查失败: {str(e)}"}
+
+    async def _query_ns_address_evidence(self, ns: str) -> Dict[str, list]:
+        query_evidence = getattr(
+            self.dns_service, "query_a_record_evidence", None
+        )
+        if callable(query_evidence):
+            evidence = await query_evidence(ns)
+            return evidence if isinstance(evidence, dict) else {}
+        ips = await self.dns_service.query_a_record(ns)
+        return {"legacy": ips} if ips else {}
+
+    def _is_strict_china_ip(self, ip: str, location: Dict[str, Any]) -> bool:
+        strict_check = getattr(
+            self.geoip_service, "is_strict_china_ip", None
+        )
+        if callable(strict_check):
+            try:
+                return bool(strict_check(ip))
+            except Exception:
+                return False
+        return bool(location.get("is_china"))
     
     def _generate_recommendation(self, check_result: Dict[str, Any]) -> str:
         """根据检查结果生成建议"""

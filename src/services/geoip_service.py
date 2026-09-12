@@ -27,11 +27,16 @@ class GeoIPService:
         geoip_file_path: str,
         cn_ipv4_file_path: Optional[str] = None,
         cache_size: int = 4096,
-        cache_ttl: int = 21600
+        cache_ttl: int = 21600,
+        baseline_geoip_file_path: Optional[str] = None,
     ):
         self.geoip_file = Path(geoip_file_path)
         self.cn_ipv4_file = Path(cn_ipv4_file_path) if cn_ipv4_file_path else None
+        self.baseline_geoip_file = (
+            Path(baseline_geoip_file_path) if baseline_geoip_file_path else None
+        )
         self.reader = None
+        self.baseline_reader = None
         self._cn_ipv4_ranges = []
         self._cn_ipv4_range_starts = []
         self._cache_size = cache_size
@@ -50,6 +55,21 @@ class GeoIPService:
                 # 打开 MaxMind DB
                 self.reader = geoip2.database.Reader(str(self.geoip_file))
                 logger.info(f"GeoIP 数据库加载成功: {self.geoip_file}")
+
+            if GEOIP2_AVAILABLE and self.baseline_geoip_file:
+                if self.baseline_geoip_file.exists():
+                    self.baseline_reader = geoip2.database.Reader(
+                        str(self.baseline_geoip_file)
+                    )
+                    logger.info(
+                        "GeoIP 严格基线数据库加载成功: {}",
+                        self.baseline_geoip_file,
+                    )
+                else:
+                    logger.warning(
+                        "GeoIP 严格基线数据库不存在: {}",
+                        self.baseline_geoip_file,
+                    )
 
             self._load_cn_ipv4()
             self._init_cache()
@@ -103,6 +123,25 @@ class GeoIPService:
         except Exception as e:
             logger.error(f"查询 IP 地理位置失败: {e}")
             return None
+
+    @staticmethod
+    def _reader_country_code(reader, ip: str) -> Optional[str]:
+        if not reader:
+            return None
+        try:
+            response = reader.country(ip)
+            return (
+                response.country.iso_code
+                or response.registered_country.iso_code
+                or response.represented_country.iso_code
+            )
+        except geoip2.errors.AddressNotFoundError:
+            return None
+
+    def is_strict_china_ip(self, ip: str) -> bool:
+        """Require both the multi-source view and GeoLite2 baseline to say CN."""
+        location = self.get_location_info(ip)
+        return bool(location.get("strict_is_china"))
     
     def _fallback_china_check(self, ip: str) -> Optional[str]:
         """备用方案：使用中国 IPv4 CIDR 列表检查"""
@@ -175,9 +214,16 @@ class GeoIPService:
     def reload(self) -> bool:
         """Atomically switch readers and CIDR ranges after a data refresh."""
         new_reader = None
+        new_baseline_reader = None
         try:
             if GEOIP2_AVAILABLE and self.geoip_file.exists():
                 new_reader = geoip2.database.Reader(str(self.geoip_file))
+            if GEOIP2_AVAILABLE and self.baseline_geoip_file:
+                if not self.baseline_geoip_file.exists():
+                    raise ValueError("GeoIP 严格基线数据库不存在")
+                new_baseline_reader = geoip2.database.Reader(
+                    str(self.baseline_geoip_file)
+                )
             ranges, starts = self._read_cn_ipv4_ranges()
             if not ranges:
                 if new_reader:
@@ -185,13 +231,17 @@ class GeoIPService:
                 raise ValueError("中国 IPv4 CIDR 数据为空")
 
             old_reader = self.reader
+            old_baseline_reader = self.baseline_reader
             self.reader = new_reader
+            self.baseline_reader = new_baseline_reader
             self._cn_ipv4_ranges = ranges
             self._cn_ipv4_range_starts = starts
             if self._location_cache is not None:
                 self._location_cache.clear()
             if old_reader:
                 old_reader.close()
+            if old_baseline_reader:
+                old_baseline_reader.close()
             logger.info("GeoIP/CIDR 数据已热重载")
             return True
         except Exception as e:
@@ -200,6 +250,17 @@ class GeoIPService:
                     new_reader.close()
                 except Exception as close_error:
                     logger.debug("关闭未采用的 GeoIP reader 失败: {}", close_error)
+            if (
+                new_baseline_reader
+                and new_baseline_reader is not self.baseline_reader
+            ):
+                try:
+                    new_baseline_reader.close()
+                except Exception as close_error:
+                    logger.debug(
+                        "关闭未采用的 GeoIP 严格基线 reader 失败: {}",
+                        close_error,
+                    )
             logger.error("GeoIP/CIDR 热重载失败，继续使用旧数据: {}", e)
             return False
 
@@ -209,6 +270,11 @@ class GeoIPService:
                 self.reader.close()
             finally:
                 self.reader = None
+        if self.baseline_reader:
+            try:
+                self.baseline_reader.close()
+            finally:
+                self.baseline_reader = None
     
     def is_china_ip(self, ip: str) -> bool:
         """检查是否为中国 IP"""
@@ -227,6 +293,7 @@ class GeoIPService:
 
             country_code = None
             country_name = None
+            baseline_country_code = None
 
             # Read the MMDB once per uncached IP. The old path first called
             # get_country_code() and then repeated reader.country() for the
@@ -252,6 +319,17 @@ class GeoIPService:
 
             if not country_code:
                 country_code = self._fallback_china_check(ip)
+
+            if self.baseline_reader:
+                try:
+                    baseline_country_code = self._reader_country_code(
+                        self.baseline_reader, ip
+                    )
+                except Exception as e:
+                    logger.debug(
+                        "查询 GeoIP 严格基线失败: {}",
+                        type(e).__name__,
+                    )
             
             # 回退到简单映射
             country_names = {
@@ -271,7 +349,11 @@ class GeoIPService:
                 "ip": ip,
                 "country_code": country_code,
                 "country_name": country_name or country_names.get(country_code, "未知"),
-                "is_china": country_code == "CN" if country_code else False
+                "is_china": country_code == "CN" if country_code else False,
+                "baseline_country_code": baseline_country_code,
+                "strict_is_china": (
+                    country_code == "CN" and baseline_country_code == "CN"
+                ),
             }
             if self._location_cache is not None:
                 self._location_cache.set(ip, result)
@@ -283,7 +365,9 @@ class GeoIPService:
                 "ip": ip,
                 "country_code": None,
                 "country_name": "未知",
-                "is_china": False
+                "is_china": False,
+                "baseline_country_code": None,
+                "strict_is_china": False,
             }
             if self._location_cache is not None:
                 self._location_cache.set(ip, result)

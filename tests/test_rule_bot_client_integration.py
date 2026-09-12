@@ -421,6 +421,34 @@ class TestRuleBotClientSubmission(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["action"], "exists")
         self.assertEqual(result["reason"], "rules")
 
+    async def test_rejected_ns_evidence_never_reaches_github_write(self):
+        manager = HandlerManager.__new__(HandlerManager)
+        manager.github_service = SimpleNamespace(
+            check_domain_in_rules=AsyncMock(return_value={"exists": False})
+        )
+        manager.data_manager = SimpleNamespace(
+            is_domain_in_geosite=AsyncMock(return_value=False)
+        )
+        manager.domain_checker = SimpleNamespace(
+            check_domain_comprehensive=AsyncMock(
+                return_value={
+                    "lookup_status": "ok",
+                    "domain_china_status": False,
+                    "second_level_china_status": False,
+                    "ns_china_status": False,
+                }
+            ),
+            should_reject=MagicMock(return_value=True),
+        )
+        manager._add_domain_with_limit = AsyncMock()
+
+        result = await manager.check_and_add_domain_auto(
+            "oath.com", "Rule-Bot Client", user_id=("private", 0)
+        )
+
+        self.assertEqual(result["action"], "rejected")
+        manager._add_domain_with_limit.assert_not_awaited()
+
 
 class TestRuleBotClientCommitIdentity(unittest.IsolatedAsyncioTestCase):
     def test_rule_bot_client_comments_are_recognized_as_managed(self):

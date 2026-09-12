@@ -22,6 +22,7 @@ def _build_config(data_dir: str, interval: float = 0.05) -> SimpleNamespace:
         GEOSITE_CACHE_TTL=60,
         DATA_UPDATE_INTERVAL=interval,
         GEOIP_URLS=[],
+        GEOIP_BASELINE_URLS=[],
         CN_IPV4_URLS=[],
         GEOSITE_URL="",
     )
@@ -188,6 +189,25 @@ class TestDataManagerScheduling(unittest.IsolatedAsyncioTestCase):
                     ):
                         with self.assertRaisesRegex(RuntimeError, "geoip"):
                             await manager._download_initial_data()
+
+    async def test_missing_optional_geoip_baseline_does_not_block_startup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = DataManager(_build_config(temp_dir, interval=3600))
+
+            def inspect(path, label, meta_path):
+                return (label != "geoip_baseline", "valid", 100)
+
+            with patch.object(manager, "_inspect_existing_data", side_effect=inspect):
+                with patch.object(manager, "_is_file_outdated", return_value=False):
+                    with patch.object(
+                        manager,
+                        "_download_geoip_baseline",
+                        AsyncMock(side_effect=RuntimeError("network unavailable")),
+                    ) as baseline:
+                        with patch.object(manager, "_load_geosite_data", AsyncMock()):
+                            await manager._download_initial_data()
+
+            baseline.assert_awaited_once()
 
     async def test_conditional_headers_are_scoped_to_meta_source(self):
         with tempfile.TemporaryDirectory() as temp_dir:

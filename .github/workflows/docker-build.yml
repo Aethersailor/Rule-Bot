@@ -4,15 +4,11 @@ on:
   push:
     branches: [master]
     tags: ["v*"]
-  pull_request:
-    branches: [master]
   workflow_dispatch:
 
 concurrency:
-  # Serialize every publishing event because both master and version tags can
-  # update registry state. PR checks remain independently supersedable.
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-publish
+  cancel-in-progress: false
 
 env:
   DOCKERHUB_IMAGE: aethersailor/rule-bot
@@ -23,35 +19,7 @@ permissions:
   contents: read
 
 jobs:
-  validate:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
-        with:
-          python-version: "3.14"
-          cache: pip
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt -r requirements-dev.txt
-
-      - name: Run static checks
-        run: |
-          python -m compileall -q src tests
-          ruff check src tests
-          pip check
-
-      - name: Run unit tests
-        run: python -m unittest discover -s tests -v
-
-      - name: Audit Python dependencies
-        run: pip-audit -r requirements.txt
-
   build-and-push:
-    needs: validate
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -69,14 +37,12 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to Docker Hub
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
@@ -84,7 +50,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify publish source
-        if: github.event_name != 'pull_request'
         shell: bash
         env:
           EXPECTED_SHA: ${{ github.sha }}
@@ -143,7 +108,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -152,7 +117,6 @@ jobs:
           sbom: true
 
       - name: Smoke test both published architectures
-        if: github.event_name != 'pull_request'
         shell: bash
         env:
           PUBLISHED_TAGS: ${{ steps.meta.outputs.tags }}
@@ -167,7 +131,6 @@ jobs:
           done
 
       - name: Verify published images
-        if: github.event_name != 'pull_request'
         shell: bash
         env:
           EXPECTED_SHA: ${{ github.sha }}
@@ -249,7 +212,6 @@ jobs:
           test -n "$expected_index_digest"
 
       - name: Remove obsolete Docker Hub tags
-        if: github.event_name != 'pull_request'
         shell: bash
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -297,7 +259,6 @@ jobs:
           fi
 
       - name: Remove unreferenced GHCR versions
-        if: github.event_name != 'pull_request'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

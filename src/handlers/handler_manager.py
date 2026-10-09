@@ -27,6 +27,7 @@ from ..services.github_service import GitHubService
 from ..services.domain_checker import DomainChecker
 from ..services.group_service import GroupService
 from ..services.rule_bot_client_token_service import RuleBotClientTokenService
+from ..services.deferred_domain_service import DeferredDomainService
 from ..utils.domain_utils import normalize_domain, extract_second_level_domain, extract_second_level_domain_for_rules, is_cn_domain
 from ..utils.privacy import log_reference
 from ..utils.input_safety import validate_single_line_text
@@ -84,6 +85,11 @@ class HandlerManager:
         if application:
             self.group_service = GroupService(config, application.bot)
         self.rule_bot_client_token_service = None
+        self.deferred_domains = None
+        if config.RULE_BOT_CLIENT_PRIVATE_API_ENABLED or config.RULE_BOT_CLIENT_COMMUNITY_API_ENABLED:
+            self.deferred_domains = DeferredDomainService(
+                data_manager.data_dir / "deferred_domains.sqlite3", self
+            )
         if config.RULE_BOT_CLIENT_COMMUNITY_API_ENABLED:
             self.rule_bot_client_token_service = RuleBotClientTokenService(
                 config.RULE_BOT_CLIENT_COMMUNITY_TOKEN_DATABASE
@@ -96,9 +102,13 @@ class HandlerManager:
         """启动服务"""
         if self.dns_service:
             await self.dns_service.start()
+        if self.deferred_domains:
+            self.deferred_domains.start()
         
     async def stop(self):
         """停止服务"""
+        if self.deferred_domains:
+            await self.deferred_domains.stop()
         if self.dns_service:
             await self.dns_service.close()
         if self.geoip_service:
@@ -307,6 +317,12 @@ class HandlerManager:
         if not domain:
             return {"status": "invalid_domain"}
 
+        deferred = getattr(self, "deferred_domains", None)
+        if deferred and await deferred.contains(domain, source):
+            # An earlier request may have timed out before receiving its durable
+            # handoff. Do not repeat slow DNS work before acknowledging the retry.
+            return {"status": "rejected_policy", "domain": domain, "deferred": True}
+
         result = await self.check_and_add_domain_auto(
             domain,
             "Rule-Bot Client",
@@ -335,6 +351,11 @@ class HandlerManager:
             return {"status": "invalid_domain", "domain": domain}
         if result.get("error_code") == "empty_dns":
             return {"status": "rejected_policy", "domain": domain}
+        if result.get("error_code") == "temporary_dns" and deferred:
+            if await deferred.enqueue(domain, source):
+                # Old clients understand this terminal status and ignore the
+                # extra field. Acknowledge only after the durable queue commits.
+                return {"status": "rejected_policy", "domain": domain, "deferred": True}
         return {"status": "temporary_error", "domain": domain}
     
     def set_user_state(self, user_id: int, state: str, data: Dict[str, Any] = None):

@@ -611,9 +611,23 @@ class DataManager:
                 raise ValueError("GeoIP 文件过小")
             import maxminddb
 
-            reader = maxminddb.open_database(str(path))
-            reader.close()
-            return size
+            # Tree deduplication changes bytes/node count without losing addresses.
+            # Admission uses IPv4, so compare decoded IPv4 country coverage.
+            coverage = 0
+            with maxminddb.open_database(str(path)) as reader:
+                if "Country" not in reader.metadata().database_type:
+                    raise ValueError("GeoIP 数据库类型不是 Country")
+                for network, record in reader:
+                    country = (
+                        record.get("country")
+                        or record.get("registered_country")
+                        or {}
+                    ).get("iso_code")
+                    if network.version == 4 and isinstance(country, str) and re.fullmatch(r"[A-Z]{2}", country):
+                        coverage += network.num_addresses
+            if coverage == 0:
+                raise ValueError("GeoIP 数据库没有有效的 IPv4 国家记录")
+            return coverage
 
         if label == "cn_ipv4":
             valid = 0

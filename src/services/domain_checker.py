@@ -288,6 +288,7 @@ class DomainChecker:
                     result["recommendation"] = "⚠️ 域名没有地址记录，不加入规则"
                 else:
                     result["lookup_status"] = "unknown"
+                    result["error_code"] = "temporary_dns"
                     result["error"] = "暂时无法获取有效的 DNS 地址数据，请稍后重试"
                     result["recommendation"] = "⚠️ 当前无法可靠判断域名归属，请稍后重试"
                 return result

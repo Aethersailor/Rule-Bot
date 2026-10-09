@@ -210,7 +210,10 @@ class RuleBotClientAPIServer:
             payload["domain"] = result["domain"]
         if result.get("commit_url"):
             payload["commit_url"] = result["commit_url"]
-        return web.json_response(payload, status=http_status)
+        if result.get("deferred"):
+            payload["deferred"] = True
+        headers = {"Retry-After": "300"} if http_status == 503 else {}
+        return web.json_response(payload, status=http_status, headers=headers)
 
     def _consume_request_slot(
         self, source: str, subject: str | int, limit: int
@@ -257,5 +260,7 @@ class RuleBotClientAPIServer:
         return web.json_response(
             {"version": 1, "status": status},
             status=http_status,
-            headers={"Cache-Control": "no-store"},
+            headers={"Cache-Control": "no-store"}
+            | ({"Retry-After": "300" if http_status == 503 else "60"}
+               if http_status in (429, 503) else {}),
         )

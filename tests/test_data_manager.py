@@ -5,9 +5,10 @@ import os
 import sys
 import tempfile
 import unittest
+import ipaddress
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # Add repo root to path
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
@@ -65,6 +66,27 @@ class _FakeSession:
 
 
 class TestDataManagerScheduling(unittest.IsolatedAsyncioTestCase):
+    def test_mmdb_compression_keeps_semantic_coverage_guard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = Path(tmp) / "old.mmdb"
+            new = Path(tmp) / "new.mmdb"
+            old.write_bytes(b"x" * 400000)
+            new.write_bytes(b"x" * 120000)
+            reader = MagicMock()
+            reader.__enter__.return_value = reader
+            reader.metadata.return_value = SimpleNamespace(database_type="GeoLite2-Country")
+            reader.__iter__.side_effect = lambda: iter([
+                (ipaddress.ip_network("8.0.0.0/8"), {"country":{"iso_code":"US"}}),
+                (ipaddress.ip_network("1.0.0.0/8"), {"country":{"iso_code":"CN"}}),
+            ])
+            with patch("maxminddb.open_database", return_value=reader):
+                previous = DataManager._validate_download(old,"geoip_baseline")
+                candidate = DataManager._validate_download(new,"geoip_baseline")
+            self.assertEqual(previous,candidate)
+            DataManager._validate_conservative_shrink("geoip_baseline",candidate,previous)
+            with self.assertRaises(ValueError):
+                DataManager._validate_conservative_shrink("geoip_baseline",candidate//3,previous)
+
     async def test_scheduler_runs_and_stops_cleanly(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config = _build_config(temp_dir, interval=0.05)

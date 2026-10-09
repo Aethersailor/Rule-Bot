@@ -201,6 +201,8 @@ Rule-Bot 会把成功添加的域名写入目标 GitHub 仓库及其提交历史
 
 Rule-Bot Client 入口默认关闭。启用前应阅读 [Wiki 接入说明](https://github.com/Aethersailor/Rule-Bot/wiki/Rule-Bot-Client-接入) 和 [隐私说明](PRIVACY.md)，使用 HTTPS 与 Bearer Token，并把监听端口限制在宿主机回环地址。隐藏 API 路径只能减少扫描噪声，不能代替鉴权。
 
+Client API 遇到暂时无法判断的 DNS 结果时，会持久化保存域名并在后台重试，不要求用户升级客户端。为兼容旧客户端，本轮响应使用 `HTTP 200`、`status=rejected_policy` 并附加 `deferred=true`：表示当前不加入规则，后续检查由服务端负责。旧客户端会继续提交下一条记录。GitHub 故障、队列写入失败和限流仍返回可重试错误。请持久化整个数据目录，以保留后台队列；数据保存范围见[隐私说明](PRIVACY.md)。
+
 ## 🔗 相关项目与反馈入口
 
 四个项目可以独立使用，也可以组成从规则维护到客户端反馈的流程：

@@ -267,6 +267,29 @@ class TestRuleBotClientAPI(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_deferred_dns_uses_legacy_terminal_status(self):
+        self.handler.submit_rule_bot_client_domain.return_value = {
+            "status": "rejected_policy", "domain": "example.com", "deferred": True,
+        }
+        response = await self.client.post(
+            self.listener.path, headers={"Authorization": f"Bearer {'p' * 32}"},
+            json={"version":1, "domain":"example.com"},
+        )
+        payload = await response.json()
+        self.assertEqual(response.status,200)
+        self.assertEqual(payload["version"],1)
+        self.assertEqual(payload["status"],"rejected_policy")
+        self.assertTrue(payload["deferred"])
+
+    async def test_transient_service_failure_advertises_backoff(self):
+        self.handler.submit_rule_bot_client_domain.return_value = {"status":"temporary_error"}
+        response = await self.client.post(
+            self.listener.path, headers={"Authorization": f"Bearer {'p' * 32}"},
+            json={"version":1, "domain":"example.com"},
+        )
+        self.assertEqual(response.status,503)
+        self.assertEqual(response.headers["Retry-After"],"300")
+
 
 class TestRuleBotClientSubmission(unittest.IsolatedAsyncioTestCase):
     def test_main_menu_button_follows_community_api_switch(self):

@@ -18,6 +18,7 @@ from ..utils.domain_utils import normalize_domain
 from ..utils.input_safety import sanitize_identity, validate_single_line_text
 from ..utils.metrics import METRICS
 from ..utils.privacy import log_reference
+from ..utils.singleflight import SingleFlight
 
 
 class GitHubService:
@@ -29,6 +30,9 @@ class GitHubService:
         self.repo = None
         self._write_lock = asyncio.Lock()
         self._repo_lock = asyncio.Lock()
+        self._file_reads = SingleFlight("github.file_read", 32)
+        self._analyses = SingleFlight("github.analysis", 32)
+        self._file_generations: dict[str, int] = {}
         self._file_cache = TTLCache(
             getattr(config, "GITHUB_FILE_CACHE_SIZE", 0),
             getattr(config, "GITHUB_FILE_CACHE_TTL", 0)
@@ -45,6 +49,11 @@ class GitHubService:
             self.github.close()
         except Exception as e:
             logger.debug("关闭 GitHub 客户端失败: {}", e)
+
+    async def aclose(self) -> None:
+        await self._file_reads.close()
+        await self._analyses.close()
+        self.close()
 
     @staticmethod
     def _is_managed_rule_comment(line: str) -> bool:
@@ -118,7 +127,10 @@ class GitHubService:
             return cached
 
         METRICS.inc("github.analysis_cache.miss")
-        analysis = await asyncio.to_thread(self._analyze_rule_content, content)
+        analysis = await self._analyses.run(
+            analysis_key,
+            lambda: asyncio.to_thread(self._analyze_rule_content, content),
+        )
         self._analysis_cache.set(analysis_key, analysis)
         return analysis
 
@@ -155,85 +167,89 @@ class GitHubService:
                 await asyncio.to_thread(self._initialize_repo)
         return self.repo is not None
     
-    async def get_rule_file_content(self, file_path: str, use_cache: bool = True) -> Optional[str]:
-        """获取规则文件内容"""
-        try:
-            logger.debug(f"正在获取文件内容: {file_path}")
-            if not await self._ensure_repo():
-                return None
-            cache_key = self._cache_key(file_path)
-            if use_cache:
-                cached = self._file_cache.get(cache_key)
-                if cached and "content" in cached:
-                    METRICS.inc("github.cache.hit")
-                    return cached["content"]
-                METRICS.inc("github.cache.miss")
+    def _invalidate_file(self, file_path: str) -> None:
+        key = self._cache_key(file_path)
+        self._file_generations[key] = self._file_generations.get(key, 0) + 1
+        self._file_cache.pop(key)
+        self._analysis_cache.clear()
 
-            start_ts = time.perf_counter()
-            # 使用 asyncio.to_thread 在线程池中执行阻塞IO
-            file_content = await asyncio.to_thread(
-                self.repo.get_contents,
-                file_path,
-                **self._get_contents_kwargs()
-            )
-            content = base64.b64decode(file_content.content).decode('utf-8')
-            self._file_cache.set(cache_key, {"content": content, "sha": getattr(file_content, "sha", None)})
-            METRICS.record_request(
-                "github.get_contents",
-                (time.perf_counter() - start_ts) * 1000,
-                success=True
-            )
-            logger.debug(f"成功获取文件内容: {file_path}, 长度: {len(content)} 字符")
-            return content
-        except GithubException as e:
-            logger.error(f"GitHub API 获取文件失败: {file_path}, status={getattr(e, 'status', 'unknown')}, message={getattr(e, 'data', {}).get('message', str(e))}")
-            METRICS.record_request("github.get_contents", 0.0, success=False)
-            return None
-        except Exception as e:
-            logger.error(f"获取文件内容失败: {file_path}, {type(e).__name__}: {e}", exc_info=True)
-            METRICS.record_request("github.get_contents", 0.0, success=False)
-            return None
+    def _publish_file(self, file_path: str, content: str, result: dict) -> None:
+        self._invalidate_file(file_path)
+        file = result.get("content")
+        try:
+            sha = getattr(file, "sha", None)
+        except Exception:
+            # A cache optimization must not turn a confirmed commit into a
+            # reported failure if optional SDK metadata is unavailable.
+            return
+        # A commit SHA is not a file/blob SHA. Missing response metadata falls
+        # back to a fresh read instead of fabricating an optimistic revision.
+        if isinstance(sha, str) and sha:
+            self._file_cache.set(self._cache_key(file_path), {"content": content, "sha": sha})
+
+    async def get_rule_file_content(self, file_path: str, use_cache: bool = True) -> Optional[str]:
+        data = await self.get_rule_file_data(file_path, use_cache)
+        return data["content"] if data is not None else None
 
     async def get_rule_file_data(self, file_path: str, use_cache: bool = True) -> Optional[Dict[str, Any]]:
-        """获取规则文件内容和 SHA"""
+        """Share concurrent reads; an older read cannot overwrite a newer write."""
         try:
-            logger.debug(f"正在获取文件内容和 SHA: {file_path}")
             if not await self._ensure_repo():
                 return None
-            cache_key = self._cache_key(file_path)
-            if use_cache:
-                cached = self._file_cache.get(cache_key)
-                if cached and "content" in cached and cached.get("sha"):
-                    METRICS.inc("github.cache.hit")
-                    return {"content": cached["content"], "sha": cached["sha"]}
-                METRICS.inc("github.cache.miss")
+            key = self._cache_key(file_path)
+            if not use_cache:
+                self._invalidate_file(file_path)
+            for _ in range(3):
+                if use_cache:
+                    cached = self._file_cache.get(key)
+                    if cached and "content" in cached and cached.get("sha"):
+                        METRICS.inc("github.cache.hit")
+                        return dict(cached)
+                    METRICS.inc("github.cache.miss")
+                generation = self._file_generations.get(key, 0)
 
-            start_ts = time.perf_counter()
-            file_content = await asyncio.to_thread(
-                self.repo.get_contents,
-                file_path,
-                **self._get_contents_kwargs()
-            )
-            content = base64.b64decode(file_content.content).decode('utf-8')
-            self._file_cache.set(cache_key, {"content": content, "sha": file_content.sha})
-            METRICS.record_request(
-                "github.get_contents",
-                (time.perf_counter() - start_ts) * 1000,
-                success=True
-            )
-            return {"content": content, "sha": file_content.sha}
-        except GithubException as e:
-            logger.error(
-                f"GitHub API 获取文件失败: {file_path}, status={getattr(e, 'status', 'unknown')}, "
-                f"message={getattr(e, 'data', {}).get('message', str(e))}"
-            )
-            METRICS.record_request("github.get_contents", 0.0, success=False)
+                async def fetch():
+                    start = time.perf_counter()
+
+                    def read():
+                        file = self.repo.get_contents(file_path, **self._get_contents_kwargs())
+                        blob = file
+                        if getattr(file, "encoding", None) == "none":
+                            # The Contents API omits content for large files. Read
+                            # the exact blob instead of treating it as empty.
+                            blob = self.repo.get_git_blob(file.sha)
+                        encoding = getattr(blob, "encoding", "base64")
+                        if isinstance(encoding, str) and encoding != "base64":
+                            raise ValueError("unsupported GitHub content encoding")
+                        encoded = blob.content
+                        size = getattr(file, "size", None)
+                        if not encoded and isinstance(size, int) and size > 0:
+                            raise ValueError("GitHub omitted non-empty file content")
+                        return {
+                            "content": base64.b64decode("".join(encoded.split()), validate=True).decode("utf-8"),
+                            "sha": getattr(file, "sha", None),
+                        }
+
+                    data = await asyncio.to_thread(read)
+                    if self._file_generations.get(key, 0) == generation:
+                        self._file_cache.set(key, data)
+                    METRICS.record_request("github.get_contents", (time.perf_counter() - start) * 1000)
+                    return data
+
+                data = await self._file_reads.run((key, generation), fetch)
+                if self._file_generations.get(key, 0) == generation:
+                    return dict(data)
+                # A commit/bypass happened while the read was outstanding.
+                # Prefer its write-through snapshot or start a new generation.
+                use_cache = True
             return None
-        except Exception as e:
-            logger.error(f"获取文件内容和 SHA 失败: {file_path}, {type(e).__name__}: {e}", exc_info=True)
-            METRICS.record_request("github.get_contents", 0.0, success=False)
-            return None
-    
+        except GithubException as error:
+            logger.error("GitHub API 获取文件失败: {}, status={}", file_path, getattr(error, "status", "unknown"))
+        except Exception as error:
+            logger.error("获取规则文件失败: {}, error_type={}", file_path, type(error).__name__)
+        METRICS.record_request("github.get_contents", 0.0, success=False)
+        return None
+
     async def check_domain_in_rules(self, domain: str, file_path: str = None) -> Dict[str, Any]:
         """检查域名是否已在规则文件中"""
         try:
@@ -510,8 +526,7 @@ class GitHubService:
                     log_reference(domain),
                     commit_sha,
                 )
-                self._file_cache.pop(self._cache_key(file_path))
-                self._analysis_cache.clear()
+                self._publish_file(file_path, new_content, commit_result)
                 
                 return {
                     "success": True,
@@ -684,8 +699,7 @@ class GitHubService:
                     log_reference(domain),
                     commit_sha,
                 )
-                self._file_cache.pop(self._cache_key(file_path))
-                self._analysis_cache.clear()
+                self._publish_file(file_path, new_content, commit_result)
                 
                 return {
                     "success": True,

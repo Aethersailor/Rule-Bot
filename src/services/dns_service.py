@@ -18,6 +18,7 @@ from ..utils.privacy import log_reference
 
 from ..utils.cache import TTLCache
 from ..utils.metrics import METRICS
+from ..utils.singleflight import SingleFlight
 
 
 MAX_DNS_RESPONSE_BYTES = 65535
@@ -51,6 +52,7 @@ class DNSService:
         self._conn_limit_per_host = conn_limit_per_host
         self._timeout_total = timeout_total
         self._timeout_connect = timeout_connect
+        self._queries = SingleFlight("dns.lookup")
         
     async def start(self):
         """启动 DNS 服务，初始化共享 Session"""
@@ -72,11 +74,44 @@ class DNSService:
 
     async def close(self):
         """关闭 DNS 服务"""
+        await self._queries.close()
         if self.session and not self.session.closed:
             await self.session.close()
             logger.info("DNS 服务已关闭，Session 已释放")
     
     async def query_a_record(self, domain: str, use_edns_china: bool = True) -> List[str]:
+        cached = self._a_cache.get((domain, use_edns_china))
+        if cached is not None:
+            METRICS.inc("dns.cache.a.hit")
+            return list(cached)
+        result = await self._queries.run(
+            ("a", domain, use_edns_china),
+            lambda: self._query_a_record(domain, use_edns_china),
+        )
+        return list(result)
+
+    async def query_a_record_evidence(self, domain: str, use_edns_china: bool = True) -> Dict[str, List[str]]:
+        cached = self._a_evidence_cache.get((domain, use_edns_china))
+        if cached is not None:
+            METRICS.inc("dns.cache.a_evidence.hit")
+            return {name: list(ips) for name, ips in cached.items()}
+        result = await self._queries.run(
+            ("evidence", domain, use_edns_china),
+            lambda: self._query_a_record_evidence(domain, use_edns_china),
+        )
+        return {name: list(ips) for name, ips in result.items()}
+
+    async def query_ns_records(self, domain: str) -> List[str]:
+        cached = self._ns_cache.get(domain)
+        if cached is not None:
+            METRICS.inc("dns.cache.ns.hit")
+            return list(cached)
+        return list(await self._queries.run(("ns", domain), lambda: self._query_ns_records(domain)))
+
+    async def classify_domain_resolution(self, domain: str) -> Literal["exists", "empty", "nxdomain", "unknown"]:
+        return await self._queries.run(("rcode", domain), lambda: self._classify_domain_resolution(domain))
+
+    async def _query_a_record(self, domain: str, use_edns_china: bool = True) -> List[str]:
         """查询 A 记录，返回 IP 地址列表（并发查询所有 DoH 服务器）"""
         cache_key = (domain, use_edns_china)
         cached = self._a_cache.get(cache_key)
@@ -85,6 +120,7 @@ class DNSService:
             return cached
         METRICS.inc("dns.cache.a.miss")
         start_ts = time.perf_counter()
+        tasks = []
         try:
             # 确保 Session 已启动
             if not self.session or self.session.closed:
@@ -114,10 +150,6 @@ class DNSService:
                         )
                         self._a_cache.set(cache_key, ips)
                         # 取消其他未完成的任务
-                        for task in tasks:
-                            if not task.done():
-                                task.cancel()
-                        await asyncio.gather(*tasks, return_exceptions=True)
                         METRICS.record_request(
                             "dns.query_a",
                             (time.perf_counter() - start_ts) * 1000,
@@ -150,8 +182,13 @@ class DNSService:
                 success=False
             )
             return []
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def query_a_record_evidence(
+    async def _query_a_record_evidence(
         self,
         domain: str,
         use_edns_china: bool = True,
@@ -222,7 +259,7 @@ class DNSService:
             )
             return {}
     
-    async def query_ns_records(self, domain: str) -> List[str]:
+    async def _query_ns_records(self, domain: str) -> List[str]:
         """查询 NS 记录，返回权威域名服务器列表（并发查询）"""
         cached = self._ns_cache.get(domain)
         if cached is not None:
@@ -230,6 +267,7 @@ class DNSService:
             return cached
         METRICS.inc("dns.cache.ns.miss")
         start_ts = time.perf_counter()
+        tasks = []
         try:
             # 确保 Session 已启动
             if not self.session or self.session.closed:
@@ -257,10 +295,6 @@ class DNSService:
                         )
                         self._ns_cache.set(domain, ns_servers)
                         # 取消其他任务
-                        for task in tasks:
-                            if not task.done():
-                                task.cancel()
-                        await asyncio.gather(*tasks, return_exceptions=True)
                         METRICS.record_request(
                             "dns.query_ns",
                             (time.perf_counter() - start_ts) * 1000,
@@ -312,7 +346,12 @@ class DNSService:
                 success=False
             )
             return []
-    
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def _query_ns_system_dns(self, domain: str) -> List[str]:
         """使用系统 DNS 查询 NS 记录作为备用方案"""
         try:
@@ -333,7 +372,7 @@ class DNSService:
             )
             return []
 
-    async def classify_domain_resolution(
+    async def _classify_domain_resolution(
         self, domain: str
     ) -> Literal["exists", "empty", "nxdomain", "unknown"]:
         """Distinguish a confirmed NXDOMAIN from a temporary resolver failure.

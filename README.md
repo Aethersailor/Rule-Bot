@@ -189,6 +189,8 @@ docker compose logs -f rule-bot
 
 ## ⚠️ 使用限制
 
+并发处理方式、升级边界和可复现的隔离基准见[性能说明](docs/performance.md)。更新沿用现有部署配置和客户端协议。
+
 - 规则文件必须已经存在；Rule-Bot 管理其中的 `DOMAIN-SUFFIX,example.com` 行，其他行可以继续由原有维护流程管理。
 - `.cn` 域名按现有策略默认直连，不会重复写入公开规则库。
 - 每个 Telegram 账号每小时最多添加 50 个域名。

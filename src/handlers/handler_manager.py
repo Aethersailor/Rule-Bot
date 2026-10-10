@@ -114,7 +114,7 @@ class HandlerManager:
         if self.geoip_service:
             self.geoip_service.close()
         if self.github_service:
-            self.github_service.close()
+            await self.github_service.aclose()
 
     async def _handle_data_update(self, changes: Dict[str, bool]) -> None:
         if (

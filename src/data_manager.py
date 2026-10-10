@@ -30,6 +30,10 @@ MAX_DOWNLOAD_BYTES = {
     "geosite": 64 * 1024 * 1024,
 }
 
+# Bump when the semantic validators change. Cached metrics are usable only for
+# the exact validated bytes, label and schema; integrity is checked every time.
+VALIDATION_CACHE_VERSION = 1
+
 
 class DataManager:
     """数据管理器"""
@@ -592,11 +596,27 @@ class DataManager:
         if not path.exists():
             return False, None, None
         try:
-            metric = self._validate_download(path, label)
             digest = self._sha256_file(path)
-            expected_hash = self._load_meta(meta_path).get("sha256")
+            meta = self._load_meta(meta_path)
+            expected_hash = meta.get("sha256")
             if expected_hash and digest != expected_hash:
                 raise ValueError("文件 hash 与 meta 不一致")
+            validation = meta.get("validation", {})
+            if (
+                expected_hash == digest
+                and meta.get("size") == path.stat().st_size
+                and isinstance(validation, dict)
+                and validation.get("version") == VALIDATION_CACHE_VERSION
+                and validation.get("label") == label
+                and type(validation.get("metric")) is int
+                and validation["metric"] > 0
+            ):
+                return True, digest, validation["metric"]
+            metric = self._validate_download(path, label)
+            if type(metric) is int and metric > 0:
+                meta.update({"sha256": digest, "size": path.stat().st_size,
+                             "validation": {"version": VALIDATION_CACHE_VERSION, "label": label, "metric": metric}})
+                self._save_meta(meta_path, meta)
             return True, digest, metric
         except Exception as e:
             logger.warning("{} 现有数据校验失败，将尝试重新下载: {}", label, e)
@@ -790,9 +810,13 @@ class DataManager:
                                         f"{label} 下载响应超过 {max_bytes} 字节上限"
                                     )
 
-                        new_metric = await asyncio.to_thread(
-                            self._validate_download, tmp_path, label
-                        )
+                        new_hash = digest.hexdigest()
+                        if existing_valid and new_hash == existing_hash:
+                            new_metric = existing_metric
+                        else:
+                            new_metric = await asyncio.to_thread(
+                                self._validate_download, tmp_path, label
+                            )
                         if existing_valid:
                             self._validate_conservative_shrink(
                                 label,
@@ -800,7 +824,6 @@ class DataManager:
                                 existing_metric,
                             )
 
-                        new_hash = digest.hexdigest()
                         changed = not existing_valid or existing_hash != new_hash
                         if changed:
                             tmp_path.replace(dest_path)
@@ -815,6 +838,8 @@ class DataManager:
                             "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                             "source": url
                         }
+                        if type(new_metric) is int and new_metric > 0:
+                            meta["validation"] = {"version": VALIDATION_CACHE_VERSION, "label": label, "metric": new_metric}
                         self._save_meta(meta_path, meta)
 
                         if changed:

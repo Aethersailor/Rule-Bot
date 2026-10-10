@@ -35,6 +35,7 @@ class DeferredDomainService:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS deferred_due ON deferred_domains(next_attempt)"
             )
+            self._pending_keys = {tuple(row) for row in connection.execute("SELECT domain, source FROM deferred_domains")}
         self.path.chmod(0o600)
 
     def _connect(self):
@@ -46,17 +47,26 @@ class DeferredDomainService:
     async def enqueue(self, domain: str, source: str) -> bool:
         accepted = await asyncio.to_thread(self._enqueue, domain, source)
         if accepted:
+            self._pending_keys.add((domain, source))
             self._wake.set()
         return accepted
 
     async def contains(self, domain: str, source: str) -> bool:
+        # Ordinary submissions are not deferred: keep them off the executor and
+        # disk. Positive hits still verify the durable row before acknowledging.
+        key = (domain, source)
+        if key not in self._pending_keys:
+            return False
         def lookup():
             with closing(self._connect()) as connection:
                 return connection.execute(
                     "SELECT 1 FROM deferred_domains WHERE domain=? AND source=?",
                     (domain, source),
                 ).fetchone() is not None
-        return await asyncio.to_thread(lookup)
+        found = await asyncio.to_thread(lookup)
+        if not found:
+            self._pending_keys.discard(key)
+        return found
 
     def _enqueue(self, domain, source):
         with closing(self._connect()) as connection, connection:
@@ -124,6 +134,8 @@ class DeferredDomainService:
         )
         terminal = result.get("action") in ("added", "exists", "rejected") or result.get("error_code") in ("nxdomain", "empty_dns")
         await asyncio.to_thread(self._finish, row, terminal)
+        if terminal:
+            self._pending_keys.discard((row["domain"], row["source"]))
         logger.info(
             "后台域名重试完成，domain_ref={}，terminal={}，action={}",
             log_reference(row["domain"]), terminal, result.get("action", "error"),

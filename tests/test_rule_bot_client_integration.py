@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 import base64
@@ -290,6 +291,40 @@ class TestRuleBotClientAPI(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status,503)
         self.assertEqual(response.headers["Retry-After"],"300")
 
+    async def test_capacity_is_bounded_and_recovers_after_requests_finish(self):
+        self.api.MAX_CONCURRENT_SUBMISSIONS = 2
+        self.config.RULE_BOT_CLIENT_PRIVATE_API_RATE_LIMIT_PER_HOUR = 20
+        entered, release = asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def blocked(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                entered.set()
+            await release.wait()
+            return {"status": "exists_rules"}
+
+        self.handler.submit_rule_bot_client_domain.side_effect = blocked
+        async def post():
+            return await self.client.post(self.listener.path, headers={"Authorization": f"Bearer {'p' * 32}"}, json={"version": 1, "domain": "example.com"})
+        tasks = [asyncio.create_task(post()) for _ in range(2)]
+        await asyncio.wait_for(entered.wait(), 1)
+        try:
+            busy = await post()
+            self.assertEqual(busy.status, 503)
+            self.assertEqual((await busy.json())["status"], "temporary_error")
+            self.assertEqual(busy.headers["Retry-After"], "1")
+            self.assertEqual(calls, 2)
+            self.assertEqual(self.api._active_submissions, 2)
+        finally:
+            release.set()
+            responses = await asyncio.gather(*tasks)
+            for response in responses:
+                await response.read()
+        self.assertEqual(self.api._active_submissions, 0)
+        self.assertEqual((await post()).status, 200)
+
 
 class TestRuleBotClientSubmission(unittest.IsolatedAsyncioTestCase):
     def test_main_menu_button_follows_community_api_switch(self):
@@ -530,6 +565,7 @@ class TestRuleBotClientCommitIdentity(unittest.IsolatedAsyncioTestCase):
         )
         service._file_cache = MagicMock()
         service._analysis_cache = MagicMock()
+        service._file_generations = {}
 
         result = await service._add_domain_to_rules_unlocked(
             "example.com", "Rule-Bot Client", source="rule_bot_client_private"
@@ -562,6 +598,7 @@ class TestRuleBotClientCommitIdentity(unittest.IsolatedAsyncioTestCase):
         )
         service._file_cache = MagicMock()
         service._analysis_cache = MagicMock()
+        service._file_generations = {}
 
         result = await service._add_domain_to_rules_unlocked(
             "example.net",

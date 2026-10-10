@@ -66,6 +66,34 @@ class _FakeSession:
 
 
 class TestDataManagerScheduling(unittest.IsolatedAsyncioTestCase):
+    def test_validated_metric_cache_keeps_integrity_checks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = DataManager(_build_config(tmp))
+            manager.geosite_file.write_bytes(_geosite_payload("fixture", 150))
+            with patch.object(manager, "_validate_download", wraps=manager._validate_download) as validate:
+                first = manager._inspect_existing_data(manager.geosite_file, "geosite", manager.geosite_meta)
+                second = manager._inspect_existing_data(manager.geosite_file, "geosite", manager.geosite_meta)
+                self.assertEqual(first, second)
+                self.assertTrue(first[0])
+                self.assertEqual(validate.call_count, 1)
+
+                manager.geosite_file.write_bytes(b"corrupted")
+                self.assertFalse(manager._inspect_existing_data(manager.geosite_file, "geosite", manager.geosite_meta)[0])
+                self.assertEqual(validate.call_count, 1)
+
+    def test_validation_schema_and_label_changes_require_revalidation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = DataManager(_build_config(tmp))
+            manager.geosite_file.write_bytes(_geosite_payload("fixture", 150))
+            manager._inspect_existing_data(manager.geosite_file, "geosite", manager.geosite_meta)
+            for changed in ({"version": 0}, {"label": "geoip"}):
+                meta = manager._load_meta(manager.geosite_meta)
+                meta["validation"].update(changed)
+                manager._save_meta(manager.geosite_meta, meta)
+                with patch.object(manager, "_validate_download", wraps=manager._validate_download) as validate:
+                    self.assertTrue(manager._inspect_existing_data(manager.geosite_file, "geosite", manager.geosite_meta)[0])
+                    validate.assert_called_once()
+
     def test_mmdb_compression_keeps_semantic_coverage_guard(self):
         with tempfile.TemporaryDirectory() as tmp:
             old = Path(tmp) / "old.mmdb"

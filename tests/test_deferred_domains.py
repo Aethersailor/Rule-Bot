@@ -27,6 +27,7 @@ class TestDeferredDomains(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(service._next(), original)
             self.assertFalse(await service.enqueue("other.example", "rule_bot_client_private"))
             restored = DeferredDomainService(service.path, manager)
+            self.assertTrue(await restored.contains("example.com", "rule_bot_client_private"))
             await restored.process(restored._next())
             row = restored._next()
             self.assertEqual(row["attempts"], 1)
@@ -85,3 +86,12 @@ class TestDeferredDomains(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result["status"], "temporary_error")
         manager.deferred_domains.enqueue.assert_not_awaited()
+
+    async def test_ordinary_submissions_do_not_open_the_queue_database(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            service = DeferredDomainService(Path(tmp)/"queue.sqlite3", self.manager())
+            with patch.object(service, "_connect", wraps=service._connect) as connect:
+                results = await asyncio.gather(*(service.contains(f"site-{i}.com", "rule_bot_client_private") for i in range(1000)))
+                self.assertFalse(any(results))
+                connect.assert_not_called()

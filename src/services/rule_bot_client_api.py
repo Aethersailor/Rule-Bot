@@ -8,6 +8,7 @@ from typing import Optional
 
 from aiohttp import web
 from loguru import logger
+from ..utils.metrics import METRICS
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,7 @@ class RuleBotClientAPIServer:
 
     MAX_REQUEST_HISTORY_SUBJECTS = 4096
     REQUEST_HISTORY_CLEANUP_INTERVAL = 600
+    MAX_CONCURRENT_SUBMISSIONS = 128
 
     def __init__(self, config, handler_manager):
         self.config = config
@@ -34,6 +36,7 @@ class RuleBotClientAPIServer:
         self._runners: list[web.AppRunner] = []
         self._request_history: dict[tuple[str, str | int], list[float]] = {}
         self._last_request_history_cleanup = 0.0
+        self._active_submissions = 0
 
     async def start(self) -> None:
         listeners = []
@@ -156,6 +159,22 @@ class RuleBotClientAPIServer:
         return await token_service.verify(token) if token_service else None
 
     async def _handle_submission(
+        self, request: web.Request, listener: ListenerConfig
+    ) -> web.Response:
+        # Do not retain unbounded DNS/SQLite/GitHub work during a burst. Clients
+        # already understand 503; no request is acknowledged or lost here.
+        if self._active_submissions >= self.MAX_CONCURRENT_SUBMISSIONS:
+            METRICS.inc("client_api.capacity_rejected")
+            response = self._json_response("temporary_error", 503)
+            response.headers["Retry-After"] = "1"
+            return response
+        self._active_submissions += 1
+        try:
+            return await self._handle_admitted_submission(request, listener)
+        finally:
+            self._active_submissions -= 1
+
+    async def _handle_admitted_submission(
         self, request: web.Request, listener: ListenerConfig
     ) -> web.Response:
         subject = await self._authenticate(request, listener)

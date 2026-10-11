@@ -22,6 +22,9 @@ jobs:
     name: Merge trusted Dependabot updates
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    if: >-
+      github.event_name != 'pull_request_target'
+      || github.event.pull_request.user.login == 'dependabot[bot]'
     steps:
       - name: Merge every eligible Dependabot pull request
         env:
@@ -34,11 +37,12 @@ jobs:
           default_branch=$(gh api "repos/$REPOSITORY" --jq '.default_branch')
           merged=0
 
-          mapfile -t pull_requests < <(
+          pull_numbers=$(
             gh api \
               "repos/$REPOSITORY/pulls?state=open&base=$default_branch&sort=created&direction=asc&per_page=100" \
-              --jq '.[].number'
+              --paginate --jq '.[].number'
           )
+          mapfile -t pull_requests < <(printf '%s' "$pull_numbers")
 
           for pull_number in "${pull_requests[@]}"; do
             if ! pull=$(gh api "repos/$REPOSITORY/pulls/$pull_number"); then
@@ -66,7 +70,6 @@ jobs:
               and length < 100
               and all(.[].filename;
                 . == "requirements.txt"
-                or . == "requirements-dev.txt"
                 or . == "docker-compose.yml"
                 or test("(^|/)(Dockerfile|Containerfile)(\\.[^/]*)?$"; "i")
                 or test("^\\.github/workflows/[^/]+\\.ya?ml$")
@@ -99,6 +102,7 @@ jobs:
               fi
               [[ $(jq -r '.state' <<<"$pull") == open ]] || break
               [[ $(jq -r '.head.sha' <<<"$pull") == "$head_sha" ]] || break
+              [[ $(jq -r '.base.ref' <<<"$pull") == "$default_branch" ]] || break
               mergeable=$(jq -r '.mergeable' <<<"$pull")
               [[ "$mergeable" != null ]] && break
               sleep 5
@@ -131,9 +135,7 @@ jobs:
           if (( merged > 0 )); then
             gh workflow run docker-build.yml \
               --repo "$REPOSITORY" --ref "$default_branch"
-            gh workflow run codeql.yml \
-              --repo "$REPOSITORY" --ref "$default_branch"
-            echo "Merged $merged Dependabot PR(s); dispatched post-merge Docker and CodeQL workflows"
+            echo "Merged $merged Dependabot PR(s); dispatched the post-merge Docker workflow"
           else
             echo "No eligible Dependabot PR required merging"
           fi

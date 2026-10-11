@@ -14,7 +14,6 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
   - package-ecosystem: "pip"
     directory: "/"
     target-branch: "master"
@@ -28,11 +27,7 @@ updates:
     labels: ["dependencies","python"]
     groups:
       python-runtime:
-        dependency-type: "production"
-        update-types: ["minor", "patch"]
-      python-development:
-        dependency-type: "development"
-        update-types: ["minor", "patch"]
+        patterns: ["*"]
   - package-ecosystem: "docker"
     directory: "/"
     target-branch: "master"
@@ -47,4 +42,3 @@ updates:
     groups:
       docker:
         patterns: ["*"]
-        update-types: ["minor", "patch"]

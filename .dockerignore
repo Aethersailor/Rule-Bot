@@ -24,18 +24,9 @@ env
 .venv
 pip-log.txt
 pip-delete-this-directory.txt
-.tox
-.coverage
-.coverage.*
 .cache
-nosetests.xml
-coverage.xml
-*.cover
 *.log
 .git
-.mypy_cache
-.pytest_cache
-.hypothesis
 .agents
 .codex
 
@@ -54,11 +45,6 @@ data/
 *.db
 *.sqlite
 
-# 测试文件
-tests/
-test_*
-*_test.py
-
 # 构建产物
 dist/
 build/
@@ -71,8 +57,6 @@ build/
 
 # 运行与开发入口（镜像只需要 requirements.txt 和 src/）
 docker-compose.yml
-requirements-dev.txt
-ruff.toml
 start.sh
 
 # 其他

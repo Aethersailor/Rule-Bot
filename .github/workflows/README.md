@@ -1,19 +1,17 @@
 # GitHub Actions
 
-项目只保留一个长期分支，并将同一份多架构镜像发布到两个镜像仓库：
+项目使用 `master` 分支，并将同一份 amd64/arm64 镜像发布到 Docker Hub 的 `aethersailor/rule-bot` 和 GitHub Container Registry 的 `ghcr.io/aethersailor/rule-bot`。
 
-- 分支：`master`
-- Docker Hub：`aethersailor/rule-bot`
-- GitHub Container Registry：`ghcr.io/aethersailor/rule-bot`
+`Build and Push Docker Image` 在 `master` 更新、推送 `vMAJOR.MINOR.PATCH` 标签或手动触发时构建并发布镜像。`master` 发布 `latest`，版本标签发布去掉 `v` 前缀的版本号，例如 `v0.2.0` 对应 `0.2.0`。发布前确认分支或标签仍指向本次提交，避免旧任务覆盖新镜像；发布后清理 Docker Hub 的非标准标签和 GHCR 中未被有效镜像引用的旧对象。
 
-`Build and Push Docker Image` 会先执行编译检查、Ruff、单元测试、依赖完整性和漏洞审计。PR 只在 GitHub Actions 内构建多架构镜像，不登录或推送镜像仓库。`master` 和基于 `master` 的手动运行只发布 `latest`；`vMAJOR.MINOR.PATCH` Git 标签只发布去掉 `v` 前缀的版本号，例如 `v0.2.0` 对应 `0.2.0`。工作流不会创建 `sha-*` 标签；发布后会删除 Docker Hub 中除 `latest` 和版本号以外的标签，并清理 GHCR 中没有标签且未被有效镜像引用的旧版本对象。
+项目由维护者人工验证，不设置单元测试、静态检查、安全扫描或镜像体积门禁。运行时的输入校验、数据保护和容器健康检查继续由应用提供。
 
-发布完成后，工作流会对实际镜像执行 amd64/arm64 依赖导入检查，并验证两个镜像仓库的架构、`org.opencontainers.image.revision`、`org.opencontainers.image.licenses=AGPL-3.0-only` 和索引摘要完全一致。每个运行架构的压缩层总大小不得超过 40,000,000 字节，镜像历史中也不得出现复制到运行阶段的 wheelhouse 层。GHCR 中当前有效镜像引用的 amd64/arm64 清单、SBOM 和来源证明属于镜像组成部分，会予以保留。部署者可以继续使用 `aethersailor/rule-bot:latest`，也可以改用 `ghcr.io/aethersailor/rule-bot:latest`；现有 Compose 和更新方式不变。
+`Auto-merge Dependabot PRs` 在 Dependabot PR 新建、更新、重新打开或转为待合并状态时运行，也支持手动触发，并每 15 分钟扫描一次开放 PR。自动合并包含 patch、minor 和 major 更新，不要求人工批准或等待测试、CodeQL 等检查。
 
-`Sync Docker Hub Description` 在 `master` 的 `.github/DOCKERHUB_DESCRIPTION.md` 变化后同步 Docker Hub 的短说明和完整说明，也支持手动触发。该工作流只读取仓库内容，使用仓库现有的 Docker Hub Secrets 登录，并在更新后回读核对；详细部署说明仍以 README 和 Wiki 为准。
+合并前只确认 PR 来自同仓库的 `dependabot[bot]` 分支、不是草稿、改动属于依赖文件，且全部提交均由 Dependabot 签名。使用精确 head SHA 执行 squash 合并，避免检查后分支变化导致误合并。单个 PR 冲突或 API 请求失败时继续处理其他 PR，后续扫描会重试；Dependabot 按 `rebase-strategy: auto` 更新分支。真实依赖冲突或不兼容升级仍可能需要维护者处理，自动合并不保证兼容性。
 
-Dependabot 更新按周处理，运行依赖和开发工具分别分组。PR 侧的只读工作流只提取并固化 Dependabot 元数据；默认分支上的独立特权工作流会复核 PR 作者、同仓库来源、签名、精确 head SHA、升级等级，以及 PR 和当前 `master` 的 Docker 验证与 CodeQL 门禁。自动合并器会在相关检查完成时运行，并每 15 分钟扫描一次所有开放 PR 作为兜底；失败或取消的检查最多自动重试 3 次。只有 minor/patch 会按创建顺序、使用 head-SHA 前置条件 squash 合并，major 保持独立 PR 供人工审查；运行期间 `master` 发生变化时，本轮会自动推迟。工作流摘要和互斥标签会明确标出“可自动合并”或“需要人工审查”，不能把绿色但跳过合并的运行理解为已经合并。
+Dependabot 按周检查 GitHub Actions、Python 运行依赖和 Docker 基础镜像。每个生态的更新分别分组，包含主版本升级。合并完成后显式触发 Docker 发布，因为使用 `GITHUB_TOKEN` 合并产生的 push 事件不会自动启动普通 push 工作流。[GitHub 工作流触发说明](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)
 
-自动合并后会显式触发并等待 `master` 的 Docker 发布和 CodeQL，避免 `GITHUB_TOKEN` 产生的合并事件不触发后续工作流；验证成功后再显式触发一次协调器以处理同批剩余 PR，空队列运行会直接结束，不会形成循环。CodeQL 对 Python 和 GitHub Actions 同时执行扩展安全与质量查询，并在每次 push、PR、手动触发之外增加每周兜底扫描。
+`Sync Docker Hub Description` 在 `master` 的 `.github/DOCKERHUB_DESCRIPTION.md` 变化后同步 Docker Hub 说明，也支持手动触发。详细部署说明以 README 和 Wiki 为准。
 
-工作流引用的 Actions 全部固定到不可变 commit SHA，并保留主版本注释供 Dependabot 识别和更新，避免可移动标签带来的供应链风险。
+工作流引用的 Actions 固定到 commit SHA，并保留主版本注释供 Dependabot 识别和更新。

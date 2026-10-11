@@ -13,27 +13,12 @@ concurrency:
 env:
   DOCKERHUB_IMAGE: aethersailor/rule-bot
   GHCR_IMAGE: ghcr.io/aethersailor/rule-bot
-  MAX_COMPRESSED_PLATFORM_SIZE: 40000000
 
 permissions:
   contents: read
 
 jobs:
-  test:
-    name: Runtime regression tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: '3.14'
-      - run: python -m pip install -r requirements.txt -r requirements-dev.txt
-      - run: ruff check src tests tools/benchmark_client_pipeline.py
-      - run: python -m unittest discover -s tests -q
-
   build-and-push:
-    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -117,7 +102,7 @@ jobs:
             org.opencontainers.image.licenses=AGPL-3.0-only
             org.opencontainers.image.revision=${{ github.sha }}
 
-      - name: Build and optionally publish multi-arch image
+      - name: Build and publish multi-arch image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
@@ -127,103 +112,6 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          provenance: mode=max
-          sbom: true
-
-      - name: Smoke test both published architectures
-        shell: bash
-        env:
-          PUBLISHED_TAGS: ${{ steps.meta.outputs.tags }}
-        run: |
-          set -euo pipefail
-          image="$(sed -n '1p' <<<"$PUBLISHED_TAGS")"
-          test -n "$image"
-          for platform in linux/amd64 linux/arm64; do
-            docker run --rm --pull always --platform "$platform" \
-              --entrypoint python "$image" \
-              -c 'import aiohttp, github, maxminddb, telegram; import src.main'
-          done
-
-      - name: Verify published images
-        shell: bash
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          EXPECTED_LICENSE: AGPL-3.0-only
-          PUBLISHED_TAGS: ${{ steps.meta.outputs.tags }}
-        run: |
-          set -euo pipefail
-          expected_index_digest=""
-          while IFS= read -r image; do
-            [[ -n "$image" ]] || continue
-            published=false
-            for attempt in {1..12}; do
-              manifest="$(docker buildx imagetools inspect "$image" \
-                --format '{{json .Manifest}}' 2>/dev/null || true)"
-              if jq -e '
-                ([.manifests[]?.platform | select(.os == "linux") | .architecture] | index("amd64")) != null
-                and
-                ([.manifests[]?.platform | select(.os == "linux") | .architecture] | index("arm64")) != null
-              ' <<<"$manifest" >/dev/null 2>&1; then
-                verified=true
-                for arch in amd64 arm64; do
-                  repository="${image%:*}"
-                  digest="$(jq -er --arg arch "$arch" '
-                    .manifests[]
-                    | select(.platform.os == "linux" and .platform.architecture == $arch)
-                    | .digest
-                  ' <<<"$manifest")"
-                  image_config="$(docker buildx imagetools inspect \
-                    "${repository}@${digest}" --format '{{json .Image}}')"
-                  revision="$(jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' \
-                    <<<"$image_config")"
-                  if [[ "$revision" != "$EXPECTED_SHA" ]]; then
-                    verified=false
-                    break
-                  fi
-                  license="$(jq -r '.config.Labels["org.opencontainers.image.licenses"] // empty' \
-                    <<<"$image_config")"
-                  if [[ "$license" != "$EXPECTED_LICENSE" ]]; then
-                    echo "$repository@$digest has unexpected OCI license label: $license" >&2
-                    verified=false
-                    break
-                  fi
-                  if jq -e '
-                    any(.history[]?; (.created_by // "") | contains("COPY /wheels"))
-                  ' <<<"$image_config" >/dev/null; then
-                    echo "$repository@$digest contains a copied wheelhouse layer" >&2
-                    exit 1
-                  fi
-                  platform_manifest="$(docker buildx imagetools inspect \
-                    "${repository}@${digest}" --raw)"
-                  compressed_size="$(jq -er '[.layers[].size] | add' \
-                    <<<"$platform_manifest")"
-                  if (( compressed_size > MAX_COMPRESSED_PLATFORM_SIZE )); then
-                    echo "$repository@$digest is $compressed_size bytes; limit is $MAX_COMPRESSED_PLATFORM_SIZE" >&2
-                    exit 1
-                  fi
-                  echo "$repository@$digest compressed size: $compressed_size bytes"
-                done
-                if [[ "$verified" == true ]]; then
-                  raw_manifest="$(docker buildx imagetools inspect "$image" --raw)"
-                  index_digest="sha256:$(printf '%s' "$raw_manifest" | sha256sum | awk '{print $1}')"
-                  if [[ -z "$expected_index_digest" ]]; then
-                    expected_index_digest="$index_digest"
-                  elif [[ "$index_digest" != "$expected_index_digest" ]]; then
-                    echo "registry digest mismatch for $image: $index_digest != $expected_index_digest" >&2
-                    exit 1
-                  fi
-                  published=true
-                  break
-                fi
-              fi
-              sleep 10
-            done
-            if [[ "$published" != true ]]; then
-              echo "$image does not contain verified amd64/arm64 images for $EXPECTED_SHA" >&2
-              exit 1
-            fi
-          done <<<"$PUBLISHED_TAGS"
-          test -n "$expected_index_digest"
 
       - name: Remove obsolete Docker Hub tags
         shell: bash

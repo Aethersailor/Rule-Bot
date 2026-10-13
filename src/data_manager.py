@@ -762,7 +762,11 @@ class DataManager:
                                 meta_path,
                             )
                             if valid_now:
-                                logger.info("{} 数据未更新（304）: {}", label, url)
+                                logger.info(
+                                    "{} 数据检查成功，内容无变化（HTTP 304），继续使用本地数据: {}",
+                                    label,
+                                    url,
+                                )
                                 METRICS.record_request(
                                     f"data.download.{label}",
                                     (time.perf_counter() - start_ts) * 1000,

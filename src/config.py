@@ -27,10 +27,6 @@ class Config:
         
         # 规则文件配置
         self.DIRECT_RULE_FILE = self._get_env_required("DIRECT_RULE_FILE")
-        self.PROXY_RULE_FILE = os.getenv("PROXY_RULE_FILE", "")  # 可选，暂未启用
-        
-        # 日志配置
-        self.LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
         # 数据目录（可选）
         self.DATA_DIR = os.getenv("DATA_DIR", "").strip()
@@ -316,8 +312,6 @@ class Config:
         user_ids = []
         parts = [part for part in re.split(r"[,\s;]+", ids_str.strip()) if part]
         for raw_id in parts:
-            if not raw_id:
-                continue
             try:
                 user_ids.append(int(raw_id))
             except ValueError:

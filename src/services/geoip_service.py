@@ -87,43 +87,6 @@ class GeoIPService:
         except Exception:
             self._location_cache = None
     
-    def get_country_code(self, ip: str) -> Optional[str]:
-        """获取 IP 的国家代码"""
-        try:
-            # 验证 IP 格式
-            socket.inet_aton(ip)
-
-            if self._location_cache is not None:
-                cached = self._location_cache.get(ip)
-                if cached is not None:
-                    return cached.get("country_code")
-            
-            # 如果有真实的 GeoIP2 数据库
-            if self.reader:
-                try:
-                    response = self.reader.country(ip)
-                    country_code = response.country.iso_code
-                    if not country_code:
-                        country_code = (
-                            response.registered_country.iso_code
-                            or response.represented_country.iso_code
-                        )
-                    if country_code:
-                        return country_code
-                except geoip2.errors.AddressNotFoundError:
-                    logger.debug(f"IP {ip} 未在 GeoIP 数据库中找到")
-                except Exception as e:
-                    logger.warning(f"GeoIP 查询失败: {e}")
-                # 数据库缺失记录或查询失败时，回退到简化的中国 IP 段判断
-                return self._fallback_china_check(ip)
-            
-            # 回退到简化的中国 IP 段检查（仅作为备用）
-            return self._fallback_china_check(ip)
-            
-        except Exception as e:
-            logger.error(f"查询 IP 地理位置失败: {e}")
-            return None
-
     @staticmethod
     def _reader_country_code(reader, ip: str) -> Optional[str]:
         if not reader:
@@ -276,11 +239,6 @@ class GeoIPService:
             finally:
                 self.baseline_reader = None
     
-    def is_china_ip(self, ip: str) -> bool:
-        """检查是否为中国 IP"""
-        country_code = self.get_country_code(ip)
-        return country_code == "CN"
-    
     def get_location_info(self, ip: str) -> Dict[str, Any]:
         """获取 IP 的详细位置信息"""
         try:
@@ -295,9 +253,7 @@ class GeoIPService:
             country_name = None
             baseline_country_code = None
 
-            # Read the MMDB once per uncached IP. The old path first called
-            # get_country_code() and then repeated reader.country() for the
-            # display name.
+            # Read the MMDB once per uncached IP for both policy and display.
             if self.reader:
                 try:
                     response = self.reader.country(ip)

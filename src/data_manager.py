@@ -43,7 +43,6 @@ class DataManager:
         self.geosite_domains: Set[str] = set()
         self.geosite_keywords: List[str] = []
         self.geosite_regex_patterns: List[Pattern[str]] = []
-        self.geosite_includes: List[str] = []
         self._data_lock = threading.RLock()
         self._update_lock = threading.Lock()
         self._scheduler_task: Optional[asyncio.Task] = None
@@ -215,19 +214,19 @@ class DataManager:
             labels = []
             if need_geoip:
                 logger.info("下载 GeoIP 数据...")
-                labels.append(("geoip", self.geoip_file))
+                labels.append("geoip")
                 requests.append(self._download_geoip())
             if need_geoip_baseline:
                 logger.info("下载 GeoIP 严格基线数据...")
-                labels.append(("geoip_baseline", self.geoip_baseline_file))
+                labels.append("geoip_baseline")
                 requests.append(self._download_geoip_baseline())
             if need_cn_ipv4:
                 logger.info("下载中国 IPv4 CIDR 数据...")
-                labels.append(("cn_ipv4", self.cn_ipv4_file))
+                labels.append("cn_ipv4")
                 requests.append(self._download_cn_ipv4())
             if need_geosite:
                 logger.info("下载 GeoSite 数据...")
-                labels.append(("geosite", self.geosite_file))
+                labels.append("geosite")
                 requests.append(self._download_geosite())
 
             changes = {
@@ -239,7 +238,7 @@ class DataManager:
             if requests:
                 results = await asyncio.gather(*requests, return_exceptions=True)
                 missing_failures = []
-                for (label, path), result in zip(labels, results):
+                for label, result in zip(labels, results):
                     if isinstance(result, BaseException):
                         if existing_valid[label]:
                             logger.warning("{} 更新失败，继续使用现有数据: {}", label, result)
@@ -335,7 +334,7 @@ class DataManager:
                 return
             
             logger.info("加载 GeoSite 数据到内存...")
-            domains, keywords, regex_patterns, includes = await asyncio.to_thread(
+            domains, keywords, regex_patterns, include_count = await asyncio.to_thread(
                 self._parse_geosite_file
             )
             
@@ -343,7 +342,6 @@ class DataManager:
                 self.geosite_domains = domains
                 self.geosite_keywords = keywords
                 self.geosite_regex_patterns = regex_patterns
-                self.geosite_includes = includes
                 if stamp:
                     self._geosite_stamp = stamp
                 self._geosite_cache.clear()
@@ -353,9 +351,9 @@ class DataManager:
                 len(domains),
                 len(keywords),
                 len(regex_patterns),
-                len(includes)
+                include_count
             )
-            if includes:
+            if include_count:
                 logger.warning("检测到 GeoSite include 规则，当前未展开解析")
             
         except Exception as e:
@@ -377,12 +375,12 @@ class DataManager:
 
     def _parse_geosite_file(
         self,
-    ) -> tuple[Set[str], List[str], List[Pattern[str]], List[str]]:
+    ) -> tuple[Set[str], List[str], List[Pattern[str]], int]:
         """Parse the potentially large GeoSite file outside the event loop."""
         domains: Set[str] = set()
         keywords: List[str] = []
         regex_patterns: List[Pattern[str]] = []
-        includes: List[str] = []
+        include_count = 0
 
         with self.geosite_file.open("r", encoding="utf-8") as handle:
             for line_num, raw_line in enumerate(handle, 1):
@@ -412,7 +410,7 @@ class DataManager:
                     elif line.startswith("include:") or line.startswith("geosite:"):
                         include_item = line.split(":", 1)[1].strip()
                         if include_item:
-                            includes.append(include_item)
+                            include_count += 1
                     else:
                         domain = line
 
@@ -422,7 +420,7 @@ class DataManager:
                 if line_num % 10000 == 0:
                     logger.info("已处理 {} 行 GeoSite 数据", line_num)
 
-        return domains, keywords, regex_patterns, includes
+        return domains, keywords, regex_patterns, include_count
     
     async def is_domain_in_geosite(self, domain: str) -> bool:
         """检查域名是否在 GeoSite 中"""

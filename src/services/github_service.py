@@ -55,19 +55,6 @@ class GitHubService:
         await self._analyses.close()
         self.close()
 
-    @staticmethod
-    def _is_managed_rule_comment(line: str) -> bool:
-        stripped = line.strip()
-        if not stripped.startswith("#"):
-            return False
-
-        normalized = stripped.lower()
-        return " / date: " in normalized and (
-            "add by telegram user:" in normalized
-            or "force add by admin:" in normalized
-            or "add by rule-bot client" in normalized
-        )
-
     def _target_branch(self) -> Optional[str]:
         branch = getattr(self.config, "GITHUB_BRANCH", "")
         if isinstance(branch, str):
@@ -186,10 +173,6 @@ class GitHubService:
         # back to a fresh read instead of fabricating an optimistic revision.
         if isinstance(sha, str) and sha:
             self._file_cache.set(self._cache_key(file_path), {"content": content, "sha": sha})
-
-    async def get_rule_file_content(self, file_path: str, use_cache: bool = True) -> Optional[str]:
-        data = await self.get_rule_file_data(file_path, use_cache)
-        return data["content"] if data is not None else None
 
     async def get_rule_file_data(self, file_path: str, use_cache: bool = True) -> Optional[Dict[str, Any]]:
         """Share concurrent reads; an older read cannot overwrite a newer write."""
@@ -577,147 +560,6 @@ class GitHubService:
             if commit_attempted:
                 result["submission_uncertain"] = True
             return result
-    
-    async def remove_domain_from_rules(
-        self,
-        domain: str,
-        user_name: str,
-        file_path: str = None,
-    ) -> Dict[str, Any]:
-        async with self._write_lock:
-            return await self._remove_domain_from_rules_unlocked(domain, user_name, file_path)
-
-    async def _remove_domain_from_rules_unlocked(self, domain: str, user_name: str, file_path: str = None) -> Dict[str, Any]:
-        """从规则文件中删除域名"""
-        try:
-            normalized_domain = normalize_domain(domain)
-            if not normalized_domain or normalized_domain != domain.strip().lower():
-                return {"success": False, "error": "无效或不安全的域名格式"}
-            domain = normalized_domain
-            user_name = sanitize_identity(user_name)
-            if not file_path:
-                file_path = self.config.DIRECT_RULE_FILE
-
-            if not await self._ensure_repo():
-                error_msg = "GitHub 仓库连接未初始化"
-                logger.error(error_msg)
-                return {"success": False, "error": error_msg}
-
-            max_retries = 3
-            for attempt in range(1, max_retries + 1):
-                file_data = await self.get_rule_file_data(file_path, use_cache=(attempt == 1))
-                if not file_data:
-                    return {"success": False, "error": "无法获取文件内容"}
-
-                content = file_data["content"]
-                file_sha = file_data["sha"]
-
-                # 在线程中处理文件内容修改逻辑
-                def _prepare_removal():
-                    lines = content.split('\n')
-                    domain_lower = domain.lower()
-                    removed_lines = []
-                    new_lines = []
-                    
-                    i = 0
-                    while i < len(lines):
-                        line = lines[i].strip()
-                        
-                        # 检查是否是要删除的域名规则
-                        if line.startswith('DOMAIN-SUFFIX,'):
-                            rule_domain = line[14:].strip().lower()
-                            if rule_domain == domain_lower:
-                                # 找到要删除的规则
-                                removed_lines.append(line)
-                                
-                                # 检查前一行是否是相关注释
-                                previous_line = lines[i-1].strip() if i > 0 else ""
-                                if previous_line and self._is_managed_rule_comment(previous_line):
-                                    # 删除注释行
-                                    removed_lines.append(previous_line)
-                                    if new_lines:
-                                        new_lines.pop()  # 移除已添加的注释行
-                                
-                                i += 1  # 跳过当前规则行
-                                continue
-                        
-                        new_lines.append(lines[i])
-                        i += 1
-                    
-                    if not removed_lines:
-                        return None, "未找到指定域名的规则"
-                    
-                    return (new_lines, removed_lines), None
-
-                result, error = await asyncio.to_thread(_prepare_removal)
-                if error:
-                    return {"success": False, "error": error}
-                
-                new_lines, removed_lines = result
-                
-                # 重新组合内容
-                new_content = '\n'.join(new_lines)
-                
-                # 提交更改（遵循 Conventional Commits 规范）
-                commit_message = f"feat(rules): remove direct domain {domain} by Telegram Bot (Telegram user: {user_name})"
-                
-                def _perform_commit():
-                    return self.repo.update_file(
-                        file_path,
-                        commit_message,
-                        new_content,
-                        file_sha,
-                        committer=InputGitAuthor(
-                            name=self.config.GITHUB_COMMIT_NAME,
-                            email=self.config.GITHUB_COMMIT_EMAIL
-                        ),
-                        **self._update_file_kwargs()
-                    )
-
-                try:
-                    start_ts = time.perf_counter()
-                    commit_result = await asyncio.to_thread(_perform_commit)
-                    METRICS.record_request(
-                        "github.update_file",
-                        (time.perf_counter() - start_ts) * 1000,
-                        success=True
-                    )
-                except GithubException as e:
-                    METRICS.record_request("github.update_file", 0.0, success=False)
-                    if getattr(e, "status", None) == 409 and attempt < max_retries:
-                        logger.warning("GitHub 更新冲突，准备重试")
-                        await asyncio.sleep(0.5 * attempt)
-                        continue
-                    raise
-                
-                # 构建 commit 链接
-                commit_sha = commit_result['commit'].sha
-                commit_url = f"https://github.com/{self.config.GITHUB_REPO}/commit/{commit_sha}"
-                
-                logger.info(
-                    "成功删除规则，domain_ref={}，commit={}",
-                    log_reference(domain),
-                    commit_sha,
-                )
-                self._publish_file(file_path, new_content, commit_result)
-                
-                return {
-                    "success": True,
-                    "domain": domain,
-                    "removed_lines": removed_lines,
-                    "commit_sha": commit_sha,
-                    "commit_url": commit_url,
-                    "file_path": file_path
-                }
-
-            return {"success": False, "error": "GitHub 更新冲突，多次重试失败"}
-            
-        except GithubException as e:
-            logger.error(f"GitHub API 错误: {e}")
-            return {"success": False, "error": f"GitHub API 错误: {e.data.get('message', str(e))}"}
-        except Exception as e:
-            logger.error(f"删除域名规则失败: {e}")
-            return {"success": False, "error": str(e)}
     
     async def get_file_stats(self, file_path: str = None) -> Dict[str, Any]:
         """获取规则文件统计信息"""

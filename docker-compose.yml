@@ -32,8 +32,6 @@ services:
       # GitHub 目标分支 (可选，不填则使用仓库默认分支)
       # - GITHUB_BRANCH=main
 
-      # 代理规则文件路径 (可选，暂不使用)
-      # - PROXY_RULE_FILE=your_proxy_rule_file_path
       # ========================================
 
       # ========== 可选配置项 ==========

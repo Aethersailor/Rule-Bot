@@ -1499,7 +1499,6 @@ class HandlerManager:
             # access, revocation and credential deletion remain available.
             if (
                 not is_self_service_callback
-                and not is_group_admin_force
                 and not await self.check_group_membership(update)
             ):
                 return
@@ -2258,7 +2257,7 @@ class HandlerManager:
             processing_msg = await update.message.reply_text("🔍 正在检查域名…")
             
             # 检查用户添加频率限制
-            can_add, remaining = self.check_user_add_limit(user_id)
+            can_add, _ = self.check_user_add_limit(user_id)
             if not can_add:
                 keyboard = [
                     [InlineKeyboardButton("🔍 查询域名", callback_data="query_domain")],

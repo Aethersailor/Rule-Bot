@@ -4,7 +4,7 @@
 """
 
 import re
-from typing import List, Optional
+from typing import Optional
 from .domain_utils import normalize_domain, is_valid_domain, extract_second_level_domain_for_rules
 
 
@@ -19,37 +19,6 @@ DOMAIN_PATTERN = re.compile(
     r'\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b',
     re.IGNORECASE
 )
-
-
-def extract_domains_from_text(text: str) -> List[str]:
-    """从文本中提取所有可能的域名
-    
-    Args:
-        text: 输入文本
-        
-    Returns:
-        去重后的有效域名列表
-    """
-    if not text:
-        return []
-    
-    domains = set()
-    
-    # 1. 先提取 URL 中的域名
-    urls = URL_PATTERN.findall(text)
-    for url in urls:
-        domain = normalize_domain(url)
-        if domain and is_valid_domain(domain):
-            domains.add(domain)
-    
-    # 2. 提取纯域名格式
-    domain_matches = DOMAIN_PATTERN.findall(text)
-    for domain in domain_matches:
-        normalized = normalize_domain(domain)
-        if normalized and is_valid_domain(normalized):
-            domains.add(normalized)
-    
-    return list(domains)
 
 
 def extract_first_valid_domain(text: str) -> Optional[str]:

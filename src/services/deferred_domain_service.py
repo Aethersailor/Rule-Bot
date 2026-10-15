@@ -94,6 +94,7 @@ class DeferredDomainService:
             try:
                 await self._task
             except asyncio.CancelledError:
+                # stop() cancelled the worker; consuming its cancellation completes shutdown.
                 pass
             self._task = None
 
@@ -160,4 +161,5 @@ class DeferredDomainService:
             try:
                 await asyncio.wait_for(self._wake.wait(), timeout=wait)
             except TimeoutError:
+                # The scheduled delay elapsed; check the queue again on the next iteration.
                 pass

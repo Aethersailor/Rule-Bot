@@ -23,6 +23,11 @@ Rule-Bot 把域名查询、网络信息检查、私聊确认、自动入口处�
 >
 > 公共实例负责查询和维护补充直连规则文件 [`rule/Custom_Direct.list`](https://github.com/Aethersailor/Custom_OpenClash_Rules/blob/main/rule/Custom_Direct.list)。符合条件的域名会在 Telegram 私聊确认后，或由已授权的自动入口按策略处理后，以 `DOMAIN-SUFFIX` 规则写入该文件。维护其他规则仓库或需要独立服务时，再部署自己的实例。
 
+> [!IMPORTANT]
+> **项目边界声明**
+>
+> 本项目不提供可供用户使用的代理服务器、代理节点或节点订阅，不运营「机场」等代理服务，也不提供网络接入服务。本项目及其维护者与上述服务提供者不存在合作、代理或担保关系。
+
 ## 🧭 选择使用方式
 
 | | 直接使用公共实例 | 部署自己的实例 |

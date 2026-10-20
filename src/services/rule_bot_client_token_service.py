@@ -54,10 +54,19 @@ class RuleBotClientTokenService:
                     enabled INTEGER NOT NULL,
                     issued_at INTEGER NOT NULL,
                     expires_at INTEGER NOT NULL,
+                    extended_expires_at INTEGER,
                     last_used_at INTEGER
                 )
                 """
             )
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(rule_bot_client_tokens)")
+            }
+            if "extended_expires_at" not in columns:
+                connection.execute(
+                    "ALTER TABLE rule_bot_client_tokens ADD COLUMN extended_expires_at INTEGER"
+                )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS rule_bot_client_privacy_consents (
@@ -194,6 +203,7 @@ class RuleBotClientTokenService:
                     enabled = 1,
                     issued_at = excluded.issued_at,
                     expires_at = excluded.expires_at,
+                    extended_expires_at = NULL,
                     last_used_at = NULL
                 """,
                 (user_id, subject, version, now, expires_at),
@@ -222,6 +232,7 @@ class RuleBotClientTokenService:
                 self._verify_state,
                 payload["sub"],
                 int(payload["ver"]),
+                int(payload["iat"]),
                 int(payload["exp"]),
             )
         return subject
@@ -249,7 +260,7 @@ class RuleBotClientTokenService:
                 or not isinstance(payload.get("ver"), int)
                 or not isinstance(payload.get("iat"), int)
                 or not isinstance(payload.get("exp"), int)
-                or payload["exp"] <= int(time.time())
+                or payload["exp"] <= payload["iat"]
                 or payload["iat"] > int(time.time()) + 60
             ):
                 return None
@@ -258,13 +269,15 @@ class RuleBotClientTokenService:
             return None
 
     def _verify_state(
-        self, subject: str, version: int, expires_at: int
+        self, subject: str, version: int, issued_at: int, expires_at: int
     ) -> Optional[str]:
         now = int(time.time())
         with closing(self._connect()) as connection, connection:
             row = connection.execute(
                 """
-                SELECT t.version, t.enabled, t.expires_at, c.notice_version
+                SELECT t.version, t.enabled, t.issued_at, t.expires_at,
+                    MAX(t.expires_at, COALESCE(t.extended_expires_at, 0)) AS valid_until,
+                    c.notice_version
                 FROM rule_bot_client_tokens AS t
                 LEFT JOIN rule_bot_client_privacy_consents AS c
                     ON c.user_id = t.user_id
@@ -276,8 +289,11 @@ class RuleBotClientTokenService:
                 row is None
                 or not row["enabled"]
                 or int(row["version"]) != version
+                or int(row["issued_at"]) != issued_at
                 or int(row["expires_at"]) != expires_at
-                or int(row["expires_at"]) <= now
+                # Keep the signed timestamps unchanged; only trusted server
+                # state may extend this exact token beyond its signed expiry.
+                or int(row["valid_until"]) <= now
                 or row["notice_version"] is None
                 or int(row["notice_version"]) < PRIVACY_NOTICE_VERSION
             ):
@@ -292,7 +308,8 @@ class RuleBotClientTokenService:
         with closing(self._connect()) as connection, connection:
             row = connection.execute(
                 """
-                SELECT version, enabled, issued_at, expires_at
+                SELECT version, enabled, issued_at,
+                    MAX(expires_at, COALESCE(extended_expires_at, 0)) AS expires_at
                 FROM rule_bot_client_tokens WHERE user_id = ?
                 """,
                 (user_id,),

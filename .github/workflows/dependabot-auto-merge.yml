@@ -70,6 +70,7 @@ jobs:
 
           # Repository-token merges need an explicit follow-up workflow dispatch.
           if (( merged > 0 )); then
+            gh workflow run codeql.yml --repo "$REPOSITORY" --ref "$BASE_BRANCH" || result=1
             if jq -e true <<<"$merged_files" >/dev/null; then
               gh workflow run 'docker-build.yml' --repo "$REPOSITORY" --ref "$BASE_BRANCH" || result=1
             fi

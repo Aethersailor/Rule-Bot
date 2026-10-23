@@ -1,141 +1,82 @@
-name: Auto-merge Dependabot PRs
+name: Dependabot auto-merge
 
 on:
   pull_request_target:
     branches: [master]
     types: [opened, reopened, synchronize, ready_for_review]
+  push:
+    branches: [master]
+    paths: ['.github/workflows/dependabot-auto-merge.yml']
   schedule:
-    - cron: "7,22,37,52 * * * *"
+    - cron: '44 */6 * * *'
   workflow_dispatch:
 
-concurrency:
-  group: dependabot-auto-merge-${{ github.repository }}
-  cancel-in-progress: false
-
 permissions:
-  actions: write
   contents: write
   pull-requests: write
+  actions: write
+
+concurrency:
+  group: dependabot-auto-merge
+  cancel-in-progress: false
 
 jobs:
   merge:
-    name: Merge trusted Dependabot updates
+    if: github.event_name != 'pull_request_target' || github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    if: >-
-      github.event_name != 'pull_request_target'
-      || github.event.pull_request.user.login == 'dependabot[bot]'
     steps:
-      - name: Merge every eligible Dependabot pull request
+      - name: Merge Dependabot updates
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
+          BASE_BRANCH: master
         shell: bash
         run: |
           set -euo pipefail
-
-          default_branch=$(gh api "repos/$REPOSITORY" --jq '.default_branch')
+          pull_numbers=$(gh api --paginate --method GET "repos/$REPOSITORY/pulls" \
+            -f state=open -f base="$BASE_BRANCH" -F per_page=100 \
+            --jq '.[] | select(.user.login == "dependabot[bot]") | .number')
+          before_sha=$(gh api "repos/$REPOSITORY/git/ref/heads/$BASE_BRANCH" --jq '.object.sha')
+          merged_files='[]'
           merged=0
-
-          pull_numbers=$(
-            gh api \
-              "repos/$REPOSITORY/pulls?state=open&base=$default_branch&sort=created&direction=asc&per_page=100" \
-              --paginate --jq '.[].number'
-          )
-          mapfile -t pull_requests < <(printf '%s' "$pull_numbers")
-
-          for pull_number in "${pull_requests[@]}"; do
-            if ! pull=$(gh api "repos/$REPOSITORY/pulls/$pull_number"); then
-              echo "Skipping PR #$pull_number because GitHub temporarily failed to return it"
-              continue
-            fi
-            author=$(jq -r '.user.login' <<<"$pull")
-            head_repo=$(jq -r '.head.repo.full_name // ""' <<<"$pull")
-            head_ref=$(jq -r '.head.ref' <<<"$pull")
+          result=0
+          while IFS= read -r number; do
+            test -n "$number" || continue
+            pull=$(gh api "repos/$REPOSITORY/pulls/$number")
             head_sha=$(jq -r '.head.sha' <<<"$pull")
             title=$(jq -r '.title' <<<"$pull")
-
-            [[ "$author" == 'dependabot[bot]' ]] || continue
-            [[ "$head_repo" == "$REPOSITORY" ]] || continue
-            [[ "$head_ref" == dependabot/* ]] || continue
-            [[ $(jq -r '.draft' <<<"$pull") == false ]] || continue
-
-            if ! files=$(gh api \
-                 "repos/$REPOSITORY/pulls/$pull_number/files?per_page=100"); then
-              echo "Skipping PR #$pull_number because GitHub temporarily failed to return its files"
-              continue
-            fi
-            if ! jq -e '
-              length > 0
-              and length < 100
-              and all(.[].filename;
-                . == "requirements.txt"
-                or . == "docker-compose.yml"
-                or test("(^|/)(Dockerfile|Containerfile)(\\.[^/]*)?$"; "i")
-                or test("^\\.github/workflows/[^/]+\\.ya?ml$")
-              )
-            ' <<<"$files" >/dev/null; then
-              echo "Skipping PR #$pull_number because it changes non-dependency files"
-              continue
-            fi
-
-            if ! commits=$(gh api \
-                 "repos/$REPOSITORY/pulls/$pull_number/commits?per_page=100"); then
-              echo "Skipping PR #$pull_number because GitHub temporarily failed to return its commits"
-              continue
-            fi
-            if ! jq -e '
-              length > 0
-              and length < 100
-              and all(.[]; .author.login == "dependabot[bot]")
-              and all(.[]; .commit.verification.verified == true)
-            ' <<<"$commits" >/dev/null; then
-              echo "Skipping PR #$pull_number because its commits are not trusted Dependabot commits"
-              continue
-            fi
-
-            mergeable=null
-            for _ in {1..12}; do
-              if ! pull=$(gh api "repos/$REPOSITORY/pulls/$pull_number"); then
-                mergeable=unknown
+            files=$(gh api --paginate --slurp "repos/$REPOSITORY/pulls/$number/files?per_page=100" \
+              --jq '[.[][] | .filename]')
+            response=''
+            for attempt in 1 2 3; do
+              if response=$(gh api --method PUT "repos/$REPOSITORY/pulls/$number/merge" \
+                -f merge_method=squash -f sha="$head_sha" \
+                -f commit_title="$title (#$number)" 2>&1); then
                 break
               fi
-              [[ $(jq -r '.state' <<<"$pull") == open ]] || break
-              [[ $(jq -r '.head.sha' <<<"$pull") == "$head_sha" ]] || break
-              [[ $(jq -r '.base.ref' <<<"$pull") == "$default_branch" ]] || break
-              mergeable=$(jq -r '.mergeable' <<<"$pull")
-              [[ "$mergeable" != null ]] && break
-              sleep 5
+              sleep 2
             done
-            if [[ "$mergeable" != true ]]; then
-              echo "Skipping PR #$pull_number because GitHub currently reports mergeable=$mergeable"
-              continue
-            fi
-
-            commit_title="$title (#$pull_number)"
-            if ! response=$(gh api --method PUT \
-                 "repos/$REPOSITORY/pulls/$pull_number/merge" \
-                 -f merge_method=squash \
-                 -f sha="$head_sha" \
-                 -f commit_title="$commit_title" 2>&1); then
-              echo "Skipped PR #$pull_number because GitHub rejected the merge: $response"
-              continue
-            fi
-            if jq -e '.merged == true and .sha != null' \
-                 <<<"$response" >/dev/null; then
-              merge_sha=$(jq -r '.sha' <<<"$response")
-              echo "Merged PR #$pull_number as $merge_sha"
+            if jq -e '.merged == true' <<<"$response" >/dev/null 2>&1; then
+              echo "Merged Dependabot PR #$number: $(jq -r '.sha' <<<"$response")"
+              merged_files=$(jq -cn --argjson previous "$merged_files" --argjson current "$files" \
+                '$previous + $current | unique')
               merged=$((merged + 1))
             else
-              message=$(jq -r '.message // "merge rejected"' <<<"$response")
-              echo "Skipped PR #$pull_number: $message"
+              echo "::warning::GitHub could not merge Dependabot PR #$number: $response"
+              result=1
             fi
-          done
+          done <<< "$pull_numbers"
 
+          # Repository-token merges need an explicit follow-up workflow dispatch.
           if (( merged > 0 )); then
-            gh workflow run docker-build.yml \
-              --repo "$REPOSITORY" --ref "$default_branch"
-            echo "Merged $merged Dependabot PR(s); dispatched the post-merge Docker workflow"
-          else
-            echo "No eligible Dependabot PR required merging"
+            if jq -e true <<<"$merged_files" >/dev/null; then
+              gh workflow run 'docker-build.yml' --repo "$REPOSITORY" --ref "$BASE_BRANCH" || result=1
+            fi
+            if jq -e 'any(.[]; . as $path | reduce ([{"regex":"^\\.github/DOCKERHUB_DESCRIPTION\\.md$","include":true}][]) as $pattern (false; if ($path | test($pattern.regex)) then $pattern.include else . end))' <<<"$merged_files" >/dev/null; then
+              gh workflow run 'sync-dockerhub-description.yml' --repo "$REPOSITORY" --ref "$BASE_BRANCH" || result=1
+            fi
           fi
+
+          echo "Merged $merged Dependabot PR(s) with the repository Actions token"
+          exit "$result"

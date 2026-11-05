@@ -28,7 +28,6 @@ class GroupHandler:
     def _escape_detail(self, value: object) -> str:
         """Format a complete dynamic explanation and let Telegram wrap it."""
         text = " ".join(str(value).split())
-        text = text.replace("\\", "\\\\")
         return self.handler_manager.escape_markdown(text)
 
     def _build_missing_domain_text(self) -> str:

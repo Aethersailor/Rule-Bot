@@ -8,6 +8,7 @@ from typing import Optional
 from loguru import logger
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
+from telegram.helpers import escape_markdown
 
 from ..config import Config
 from ..utils.cache import TTLCache
@@ -35,11 +36,7 @@ class GroupService:
         if not text:
             return text
 
-        text = " ".join(str(text).split()).replace("\\", "\\\\")
-        special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '!']
-        for char in special_chars:
-            text = text.replace(char, f'\\{char}')
-        return text
+        return escape_markdown(" ".join(str(text).split()), version=1)
 
     @staticmethod
     def _escape_inline_code(value: object) -> str:
@@ -54,21 +51,37 @@ class GroupService:
         if not self._group_check_enabled:
             return True  # 功能关闭时默认通过
 
-        if not force_refresh:
+        if force_refresh:
+            self._membership_cache.pop(user_id)
+        else:
             cached = self._membership_cache.get(user_id)
             if cached is not None:
                 return cached
         
         try:
+            # Telegram only guarantees other users' membership for group admins.
+            bot_member = await self.bot.get_chat_member(
+                chat_id=self.config.REQUIRED_GROUP_ID,
+                user_id=self.bot.id,
+            )
+            if bot_member.status not in ("administrator", "creator"):
+                logger.warning(
+                    "群成员验证不可用：机器人缺少群管理员权限，status={}",
+                    bot_member.status,
+                )
+                return None
+
             chat_member = await self.bot.get_chat_member(
                 chat_id=self.config.REQUIRED_GROUP_ID,
                 user_id=user_id
             )
             
             # 检查用户状态
-            valid_statuses = ['member', 'administrator', 'creator']
-            is_member = chat_member.status in valid_statuses
-            self._membership_cache.set(user_id, is_member)
+            is_member = chat_member.status in ("member", "administrator", "creator")
+            if chat_member.status == "restricted":
+                is_member = chat_member.is_member
+            if is_member:
+                self._membership_cache.set(user_id, True)
             
             logger.debug(
                 "群成员检查完成: user_ref={}, status={}, member={}",
@@ -93,6 +106,14 @@ class GroupService:
             )
             return None
     
+    @staticmethod
+    def get_verification_error_message() -> str:
+        return (
+            "⚠️ *暂时无法验证群成员*\n\n"
+            "机器人可能缺少群管理员权限，或 Telegram 暂时不可用。\n"
+            "请群管理员确认机器人权限后，点击“已加入，重新验证”。"
+        )
+
     def get_join_group_message(self) -> str:
         """获取加入群组的提示消息"""
         if not self._group_check_enabled:

@@ -5,6 +5,7 @@
 
 import secrets
 import time
+from html import escape
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 from collections import defaultdict
@@ -18,6 +19,7 @@ from telegram import (
 )
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
+from telegram.helpers import escape_markdown
 
 from ..config import Config
 from ..data_manager import DataManager
@@ -569,17 +571,10 @@ class HandlerManager:
             return False, description.strip()[:self.MAX_DESCRIPTION_LENGTH]
     
     def escape_markdown(self, text: str) -> str:
-        """转义 Markdown 特殊字符"""
+        """Escape plain text for Telegram's legacy Markdown mode."""
         if not text:
             return text
-
-        text = str(text).replace("\\", "\\\\")
-        # 转义特殊字符（不包含点号，因为域名和文件路径中需要保留）
-        special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '!']
-        for char in special_chars:
-            text = text.replace(char, f'\\{char}')
-        
-        return text
+        return escape_markdown(str(text), version=1)
 
     @staticmethod
     def _raw_telegram_identity(user) -> str:
@@ -879,25 +874,25 @@ class HandlerManager:
             return False
 
     def _build_main_menu_text(self, username: str) -> str:
-        """构建主菜单文案"""
-        username = self.escape_markdown(self._single_line_display(username))
+        """Build the HTML menu so names remain literal inside bold and links."""
+        username = escape(self._single_line_display(username))
         repo = str(self.config.GITHUB_REPO).strip()
-        repo_label = self.escape_markdown(repo)
+        repo_label = escape(repo)
         return "\n".join(
             [
-                f"👋 *欢迎使用 Rule-Bot，{username}！*",
+                f"👋 <b>欢迎使用 Rule-Bot，{username}！</b>",
                 "",
-                "🧭 *直连规则查询与提交助手*",
+                "🧭 <b>直连规则查询与提交助手</b>",
                 "",
-                "📚 查询公开规则库与 `GEOSITE:CN` 收录状态",
+                "📚 查询公开规则库与 <code>GEOSITE:CN</code> 收录状态",
                 "🌐 检查域名、可注册域名 IP 及 NS 服务器归属",
                 "🧾 提交前展示最终规则、判断依据与公开范围",
                 "🌍 明确确认后，规则才会写入公开 GitHub",
                 "",
-                "📂 *公开仓库*",
-                f"[{repo_label}](https://github.com/{repo})",
+                "📂 <b>公开仓库</b>",
+                f'<a href="{escape(self._repo_url())}">{repo_label}</a>',
                 "",
-                "👇 *请选择需要使用的功能*",
+                "👇 <b>请选择需要使用的功能</b>",
             ]
         )
 
@@ -1243,28 +1238,10 @@ class HandlerManager:
         if check_result is True:
             return True
 
-        if check_result is False:
-            join_message = self.group_service.get_join_group_message()
-            join_keyboard = self.group_service.get_join_group_keyboard()
-            if update.callback_query:
-                if not callback_answered:
-                    await update.callback_query.answer()
-                await update.callback_query.edit_message_text(
-                    join_message,
-                    reply_markup=join_keyboard,
-                    parse_mode='Markdown',
-                )
-            else:
-                await update.message.reply_text(
-                    join_message,
-                    reply_markup=join_keyboard,
-                    parse_mode='Markdown',
-                )
-            return False
-
         error_message = (
-            "⚠️ *暂时无法验证群成员*\n\n"
-            "请稍后点击“重新验证”。"
+            self.group_service.get_join_group_message()
+            if check_result is False
+            else self.group_service.get_verification_error_message()
         )
         retry_keyboard = self.group_service.get_join_group_keyboard()
         if update.callback_query:
@@ -1308,7 +1285,7 @@ class HandlerManager:
             await update.message.reply_text(
                 self._build_main_menu_text(username),
                 reply_markup=self._build_main_menu_keyboard(),
-                parse_mode="Markdown",
+                parse_mode="HTML",
                 disable_web_page_preview=True,
             )
             
@@ -1570,6 +1547,8 @@ class HandlerManager:
                 )
                 
         except Exception as e:
+            if isinstance(e, BadRequest) and "message is not modified" in str(e).lower():
+                return
             logger.error(f"处理回调失败: {e}")
             await query.edit_message_text(
                 "❌ *操作失败*\n\n"
@@ -1620,7 +1599,7 @@ class HandlerManager:
         await query.edit_message_text(
             welcome_text,
             reply_markup=reply_markup,
-            parse_mode="Markdown",
+            parse_mode="HTML",
             disable_web_page_preview=True,
         )
 
@@ -1633,7 +1612,7 @@ class HandlerManager:
         await message.reply_text(
             welcome_text,
             reply_markup=reply_markup,
-            parse_mode="Markdown",
+            parse_mode="HTML",
             disable_web_page_preview=True,
         )
 
@@ -1918,15 +1897,9 @@ class HandlerManager:
         if membership is not True:
             if membership is False:
                 message = self.group_service.get_join_group_message()
-                reply_markup = self.group_service.get_join_group_keyboard()
             else:
-                message = (
-                    "⚠️ *暂时无法验证群成员*\n\n"
-                    "请稍后重新申请 Token。"
-                )
-                reply_markup = self._recovery_keyboard(
-                    "rule_bot_client_access", "↩️ 返回接入页"
-                )
+                message = self.group_service.get_verification_error_message()
+            reply_markup = self.group_service.get_join_group_keyboard()
             await query.edit_message_text(
                 message,
                 reply_markup=reply_markup,

@@ -59,18 +59,6 @@ class GroupService:
                 return cached
         
         try:
-            # Telegram only guarantees other users' membership for group admins.
-            bot_member = await self.bot.get_chat_member(
-                chat_id=self.config.REQUIRED_GROUP_ID,
-                user_id=self.bot.id,
-            )
-            if bot_member.status not in ("administrator", "creator"):
-                logger.warning(
-                    "群成员验证不可用：机器人缺少群管理员权限，status={}",
-                    bot_member.status,
-                )
-                return None
-
             chat_member = await self.bot.get_chat_member(
                 chat_id=self.config.REQUIRED_GROUP_ID,
                 user_id=user_id
@@ -82,6 +70,18 @@ class GroupService:
                 is_member = chat_member.is_member
             if is_member:
                 self._membership_cache.set(user_id, True)
+            else:
+                # Without admin rights, Telegram can report existing members as left.
+                bot_member = await self.bot.get_chat_member(
+                    chat_id=self.config.REQUIRED_GROUP_ID,
+                    user_id=self.bot.id,
+                )
+                if bot_member.status not in ("administrator", "creator"):
+                    logger.warning(
+                        "无法确认用户未入群：机器人缺少群管理员权限，status={}",
+                        bot_member.status,
+                    )
+                    return None
             
             logger.debug(
                 "群成员检查完成: user_ref={}, status={}, member={}",

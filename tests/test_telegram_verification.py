@@ -176,18 +176,32 @@ class VerificationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIs(await self.service.check_user_in_group(2, force_refresh=True), expected)
 
     async def test_non_admin_bot_does_not_report_user_left(self):
-        for status in ("member", "left", "kicked"):
-            with self.subTest(bot_status=status):
-                self.request.bot_status = status
+        self.request.is_member = False
+        for bot_status in ("member", "left", "kicked"):
+            for user_status in ("left", "kicked", "restricted"):
+                with self.subTest(bot_status=bot_status, user_status=user_status):
+                    self.request.bot_status = bot_status
+                    self.request.user_status = user_status
+                    self.request.calls.clear()
+                    self.assertIsNone(await self.service.check_user_in_group(2, force_refresh=True))
+                    self.assertEqual([p["user_id"] for e, p in self.request.calls], [2, 1])
+                    self.assertIsNone(self.service._membership_cache.get(2))
+
+    async def test_non_admin_bot_can_verify_existing_members(self):
+        self.request.bot_status = "member"
+        for status in ("creator", "administrator", "member", "restricted"):
+            with self.subTest(user_status=status):
+                self.request.user_status = status
                 self.request.calls.clear()
-                self.assertIsNone(await self.service.check_user_in_group(2, force_refresh=True))
-                self.assertEqual([p["user_id"] for e, p in self.request.calls], [1])
-                self.assertIsNone(self.service._membership_cache.get(2))
+                self.assertTrue(await self.service.check_user_in_group(2, force_refresh=True))
+                self.assertEqual([p["user_id"] for e, p in self.request.calls], [2])
 
     async def test_promotion_is_seen_on_next_check(self):
         self.request.bot_status = "member"
+        self.request.user_status = "left"
         self.assertIsNone(await self.service.check_user_in_group(2))
         self.request.bot_status = "administrator"
+        self.request.user_status = "creator"
         self.assertTrue(await self.service.check_user_in_group(2))
 
     async def test_positive_cache_and_forced_refresh(self):
@@ -231,6 +245,7 @@ class VerificationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unreliable_membership_shows_verification_error(self):
         self.request.bot_status = "member"
+        self.request.user_status = "left"
         message = SimpleNamespace(reply_text=AsyncMock())
         update = SimpleNamespace(effective_user=SimpleNamespace(id=2), callback_query=None, message=message)
         self.assertFalse(await manager(self.service).check_group_membership(update))
@@ -256,6 +271,7 @@ class VerificationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_token_issue_does_not_issue_when_verification_is_unavailable(self):
         self.request.bot_status = "member"
+        self.request.user_status = "left"
         m = manager(self.service)
         m.rule_bot_client_token_service = SimpleNamespace(issue=AsyncMock())
         query = SimpleNamespace(edit_message_text=AsyncMock())
@@ -267,6 +283,7 @@ class VerificationTests(unittest.IsolatedAsyncioTestCase):
         from telegram import Update
 
         self.request.bot_status = "member"
+        self.request.user_status = "left"
         self.request.unchanged = True
         update = Update.de_json({
             "update_id": 1,

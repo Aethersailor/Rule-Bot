@@ -106,17 +106,21 @@ class MenuHTML(HTMLParser):
         self.stack = []
         self.feed(text)
         self.close()
-        assert not self.stack
+        if self.stack:
+            raise AssertionError(f"Unclosed tags: {self.stack}")
 
     def handle_starttag(self, tag, attrs):
-        assert tag in ("b", "code", "a")
+        if tag not in ("b", "code", "a"):
+            raise AssertionError(f"Unexpected start tag: {tag}")
         self.tags.append(tag)
         self.stack.append(tag)
         if tag == "a":
             self.links.append(dict(attrs)["href"])
 
     def handle_endtag(self, tag):
-        assert self.stack.pop() == tag
+        if not self.stack or self.stack[-1] != tag:
+            raise AssertionError(f"Unexpected end tag: {tag}")
+        self.stack.pop()
 
     def handle_data(self, data):
         self.text.append(data)

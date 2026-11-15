@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # 多阶段构建：编译阶段。固定多架构索引，确保相同提交使用相同基础镜像。
-FROM python:3.15-alpine@sha256:20a82dbc2783112ddb91d1534603f802d222a3e63e593cd002eb2ac534e70211 AS builder
+FROM python:3.15-alpine@sha256:0f9552bb28711333da16915ec146f5e6bb44a7fdac9ced15dc17c2e0206346dd AS builder
 
 # 设置构建参数
 ARG BUILDKIT_INLINE_CACHE=1
@@ -35,7 +35,7 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
     && pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
 
 # 运行阶段：使用与构建阶段相同的最小化镜像
-FROM python:3.15-alpine@sha256:20a82dbc2783112ddb91d1534603f802d222a3e63e593cd002eb2ac534e70211
+FROM python:3.15-alpine@sha256:0f9552bb28711333da16915ec146f5e6bb44a7fdac9ced15dc17c2e0206346dd
 
 # 设置运行时环境变量
 ENV PYTHONUNBUFFERED=1

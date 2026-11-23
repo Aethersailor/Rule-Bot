@@ -22,6 +22,8 @@ Rule-Bot 把域名查询、网络信息检查、私聊确认、自动入口处�
 > **Rule-Bot 不是网页应用。** 项目维护的公共实例 [@asailor_rulebot](https://t.me/asailor_rulebot) 面向 [Custom_OpenClash_Rules](https://github.com/Aethersailor/Custom_OpenClash_Rules)，无需自行部署。
 >
 > 公共实例负责查询和维护补充直连规则文件 [`rule/Custom_Direct.list`](https://github.com/Aethersailor/Custom_OpenClash_Rules/blob/main/rule/Custom_Direct.list)。符合条件的域名会在 Telegram 私聊确认后，或由已授权的自动入口按策略处理后，以 `DOMAIN-SUFFIX` 规则写入该文件。维护其他规则仓库或需要独立服务时，再部署自己的实例。
+>
+> 公共实例的普通私聊、社区 Token 申请和重新签发均无需入群，申请前仍须同意隐私说明。
 
 > [!IMPORTANT]
 > **项目边界声明**

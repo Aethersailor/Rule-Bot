@@ -1227,7 +1227,7 @@ class HandlerManager:
         callback_answered: bool = False,
     ) -> bool:
         """检查用户群组成员身份"""
-        if not self.group_service or not self.group_service.is_group_check_enabled():
+        if not self.config.TELEGRAM_PRIVATE_CHAT_REQUIRE_GROUP or not self.group_service:
             return True
         
         user_id = update.effective_user.id
@@ -1244,6 +1244,20 @@ class HandlerManager:
             else self.group_service.get_verification_error_message()
         )
         retry_keyboard = self.group_service.get_join_group_keyboard()
+        if (
+            self.config.RULE_BOT_CLIENT_COMMUNITY_API_ENABLED
+            and not self.config.RULE_BOT_CLIENT_COMMUNITY_TOKEN_REQUIRE_GROUP
+        ):
+            retry_keyboard = InlineKeyboardMarkup(
+                [
+                    *retry_keyboard.inline_keyboard,
+                    [
+                        InlineKeyboardButton(
+                            "🔗 Rule-Bot Client", callback_data="rule_bot_client_access"
+                        )
+                    ],
+                ]
+            )
         if update.callback_query:
             if not callback_answered:
                 await update.callback_query.answer()
@@ -1472,8 +1486,7 @@ class HandlerManager:
                     "rule_bot_client_privacy_withdraw_confirm|",
                 )
             )
-            # Rule-Bot Client issuance performs its own fresh membership check;
-            # access, revocation and credential deletion remain available.
+            # Community Token issuance applies its own membership policy.
             if (
                 not is_self_service_callback
                 and not await self.check_group_membership(update)
@@ -1633,10 +1646,15 @@ class HandlerManager:
     def _build_rule_bot_client_access_text(
         self, status_text: str, expires: Optional[str] = None
     ) -> str:
+        eligibility = (
+            "已验证的群组成员可申请独立 Token，"
+            if self.config.RULE_BOT_CLIENT_COMMUNITY_TOKEN_REQUIRE_GROUP
+            else "可在此申请独立 Token，"
+        )
         lines = [
             "🔗 *Rule-Bot Client Community 接入*",
             "",
-            "已验证的群组成员可申请独立 Token，",
+            eligibility,
             "用于从 Rule-Bot Client 客户端提交待判断域名。",
             "",
             "🔐 *凭据说明*",
@@ -1660,8 +1678,9 @@ class HandlerManager:
             "🚫 *默认不会主动上报*\n"
             "URL 路径、查询参数、网页内容或访问次数。\n\n"
             "👤 *账号关联*\n"
-            "Token 与账号关联，用于成员校验、限流、\n"
-            "续签和吊销。Telegram 身份不会写入规则。\n\n"
+            "Token 与账号关联，用于限流、续签和吊销。\n"
+            "启用群成员验证时，签发也会校验成员身份。\n"
+            "Telegram 身份不会写入规则。\n\n"
             "🌍 *公开范围*\n"
             "成功添加的域名会公开出现在 GitHub；\n"
             "被拒绝的域名不会公开。\n\n"
@@ -1890,22 +1909,25 @@ class HandlerManager:
         await self._perform_rule_bot_client_issue(query, user_id)
 
     async def _perform_rule_bot_client_issue(self, query, user_id: int):
-        """Freshly verify membership and deliver a one-time credential message."""
-        membership = await self.group_service.check_user_in_group(
-            user_id, force_refresh=True
-        )
-        if membership is not True:
-            if membership is False:
-                message = self.group_service.get_join_group_message()
-            else:
-                message = self.group_service.get_verification_error_message()
-            reply_markup = self.group_service.get_join_group_keyboard()
-            await query.edit_message_text(
-                message,
-                reply_markup=reply_markup,
-                parse_mode="Markdown",
+        """Apply the issuance policy and deliver a one-time credential message."""
+        if self.config.RULE_BOT_CLIENT_COMMUNITY_TOKEN_REQUIRE_GROUP:
+            membership = await self.group_service.check_user_in_group(
+                user_id, force_refresh=True
             )
-            return
+            if membership is not True:
+                message = (
+                    self.group_service.get_join_group_message()
+                    if membership is False
+                    else self.group_service.get_verification_error_message()
+                )
+                await query.edit_message_text(
+                    message,
+                    reply_markup=self.group_service.get_join_group_keyboard(
+                        retry_callback="rule_bot_client_issue"
+                    ),
+                    parse_mode="Markdown",
+                )
+                return
 
         issued = await self.rule_bot_client_token_service.issue(user_id)
         token = issued["token"]

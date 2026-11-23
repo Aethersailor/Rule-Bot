@@ -1,15 +1,20 @@
 import json
+import os
 import unittest
 from html.parser import HTMLParser
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
-from telegram import Bot
+from telegram import Bot, Update
 from telegram.request import BaseRequest
 
+from src.config import Config
 from src.handlers.group_handler import GroupHandler
 from src.handlers.handler_manager import HandlerManager
 from src.services.group_service import GroupService
+from src.services.rule_bot_client_token_service import RuleBotClientTokenService
 
 
 def config():
@@ -18,8 +23,12 @@ def config():
         REQUIRED_GROUP_ID=-100123456,
         REQUIRED_GROUP_NAME="Custom_OpenClash_Rules | 交流群",
         REQUIRED_GROUP_LINK="https://t.me/example_group",
+        TELEGRAM_PRIVATE_CHAT_REQUIRE_GROUP=True,
         GITHUB_REPO="Aethersailor/Custom_OpenClash_Rules",
         RULE_BOT_CLIENT_COMMUNITY_API_ENABLED=True,
+        RULE_BOT_CLIENT_COMMUNITY_TOKEN_REQUIRE_GROUP=True,
+        RULE_BOT_CLIENT_COMMUNITY_API_BASE_URL="https://example.com",
+        RULE_BOT_CLIENT_COMMUNITY_API_PATH="/api/v1/test-community",
         ALLOWED_GROUP_IDS=[],
     )
 
@@ -124,6 +133,38 @@ class MenuHTML(HTMLParser):
 
     def handle_data(self, data):
         self.text.append(data)
+
+
+class MembershipConfigTests(unittest.TestCase):
+    def test_existing_deployments_keep_their_access_rules(self):
+        with patch.dict(os.environ, {
+            "TELEGRAM_BOT_TOKEN": "123456:TEST",
+            "GITHUB_TOKEN": "test",
+            "GITHUB_REPO": "owner/repo",
+            "DIRECT_RULE_FILE": "rules.list",
+        }, clear=True):
+            self.assertFalse(Config().TELEGRAM_PRIVATE_CHAT_REQUIRE_GROUP)
+            os.environ.update(REQUIRED_GROUP_ID="-100123456", REQUIRED_GROUP_NAME="Example")
+            self.assertFalse(Config().TELEGRAM_PRIVATE_CHAT_REQUIRE_GROUP)
+            os.environ["REQUIRED_GROUP_LINK"] = "https://t.me/example_group"
+            os.environ.update(
+                RULE_BOT_CLIENT_COMMUNITY_API_ENABLED="true",
+                RULE_BOT_CLIENT_COMMUNITY_API_BASE_URL="https://example.com",
+                RULE_BOT_CLIENT_COMMUNITY_API_PATH="/api/v1/test-community",
+                RULE_BOT_CLIENT_COMMUNITY_TOKEN_SIGNING_KEY="x" * 32,
+            )
+            legacy = Config()
+            self.assertTrue(legacy.TELEGRAM_PRIVATE_CHAT_REQUIRE_GROUP)
+            self.assertTrue(legacy.RULE_BOT_CLIENT_COMMUNITY_TOKEN_REQUIRE_GROUP)
+
+            del os.environ["REQUIRED_GROUP_ID"]
+            with self.assertRaisesRegex(ValueError, "requires group membership verification"):
+                Config()
+            os.environ["RULE_BOT_CLIENT_COMMUNITY_TOKEN_REQUIRE_GROUP"] = "false"
+            self.assertTrue(Config().RULE_BOT_CLIENT_COMMUNITY_API_ENABLED)
+            os.environ["TELEGRAM_PRIVATE_CHAT_REQUIRE_GROUP"] = "true"
+            with self.assertRaisesRegex(ValueError, "TELEGRAM_PRIVATE_CHAT_REQUIRE_GROUP requires"):
+                Config()
 
 
 class FormattingTests(unittest.TestCase):
@@ -283,9 +324,60 @@ class VerificationTests(unittest.IsolatedAsyncioTestCase):
         m.rule_bot_client_token_service.issue.assert_not_awaited()
         self.assertIn("群管理员权限", query.edit_message_text.call_args.args[0])
 
-    async def test_repeated_retry_keeps_existing_prompt(self):
-        from telegram import Update
+    async def test_private_chat_and_token_issuance_have_independent_membership_rules(self):
+        self.request.user_status = "left"
+        user = {"id": 2, "is_bot": False, "first_name": "Test"}
+        message = {"message_id": 10, "date": 1, "chat": {"id": 2, "type": "private"}}
+        start = Update.de_json({
+            "update_id": 1, "message": {**message, "from": user, "text": "/start"},
+        }, self.bot)
+        issue = Update.de_json({
+            "update_id": 2,
+            "callback_query": {
+                "id": "issue", "chat_instance": "test", "data": "rule_bot_client_issue",
+                "from": user, "message": message,
+            },
+        }, self.bot)
 
+        for chat_requires_group, token_requires_group in (
+            (False, False), (False, True), (True, False), (True, True),
+        ):
+            with self.subTest(chat_requires_group=chat_requires_group,
+                              token_requires_group=token_requires_group), TemporaryDirectory() as data:
+                cfg = config()
+                cfg.TELEGRAM_PRIVATE_CHAT_REQUIRE_GROUP = chat_requires_group
+                cfg.RULE_BOT_CLIENT_COMMUNITY_TOKEN_REQUIRE_GROUP = token_requires_group
+                m = manager(GroupService(cfg, self.bot))
+                m.config = cfg
+                tokens = RuleBotClientTokenService(Path(data) / "tokens.sqlite3", "x" * 32, 90)
+                m.rule_bot_client_token_service = tokens
+                await tokens.consent(2)
+
+                self.request.calls.clear()
+                await m.start_command(start, None)
+                endpoints = [endpoint for endpoint, _ in self.request.calls]
+                self.assertEqual("getChatMember" in endpoints, chat_requires_group)
+                reply = next(params for endpoint, params in self.request.calls if endpoint == "sendMessage")
+                self.assertEqual("加入群组后继续" in reply["text"], chat_requires_group)
+                if chat_requires_group and not token_requires_group:
+                    self.assertIn("rule_bot_client_access", json.dumps(reply["reply_markup"]))
+
+                self.request.calls.clear()
+                await m.handle_callback(issue, None)
+                endpoints = [endpoint for endpoint, _ in self.request.calls]
+                self.assertEqual("getChatMember" in endpoints, token_requires_group)
+                if token_requires_group:
+                    self.assertIsNone(await tokens.status(2))
+                    reply = next(
+                        params for endpoint, params in self.request.calls
+                        if endpoint == "editMessageText"
+                    )
+                    self.assertIn("rule_bot_client_issue", json.dumps(reply["reply_markup"]))
+                else:
+                    self.assertTrue((await tokens.status(2))["enabled"])
+                    self.assertIn("sendMessage", endpoints)
+
+    async def test_repeated_retry_keeps_existing_prompt(self):
         self.request.bot_status = "member"
         self.request.user_status = "left"
         self.request.unchanged = True

@@ -87,6 +87,17 @@ Rule-Bot 把域名查询、网络信息检查、私聊确认、自动入口处�
 
 添加流程会先规范化域名，再检查 `.cn`、目标规则文件、`GEOSITE:CN`、DNS、NS 和 GeoIP。目标域名 IP 在中国大陆时可以继续；仅由 NS 提供大陆信号时，还必须通过多解析器、双 GeoIP 数据和 NS 集群门槛，单个 NS IP 命中不会触发添加。只有符合条件的域名才会进入确认步骤。提交成功后，机器人返回规则文件路径和 GitHub 提交链接。
 
+### 入群要求
+
+部署者可以分别控制普通私聊和社区 Token 签发。两个开关均接受 `true` 和 `false`，省略时沿用旧版本行为。
+
+| 环境变量 | 控制范围 | 省略时的行为 |
+| --- | --- | --- |
+| `TELEGRAM_PRIVATE_CHAT_REQUIRE_GROUP` | 普通 Telegram 私聊 | `REQUIRED_GROUP_ID`、`REQUIRED_GROUP_NAME` 和 `REQUIRED_GROUP_LINK` 均有效时要求入群 |
+| `RULE_BOT_CLIENT_COMMUNITY_TOKEN_REQUIRE_GROUP` | 社区 Token 签发和重新签发 | 社区 API 启用时要求入群 |
+
+要求入群的功能共用上述三项群组配置。将对应开关设为 `false` 可免除该功能的入群要求。社区 Token 仍通过 Telegram 账号签发，用户须先确认隐私说明。
+
 ### 群聊
 
 启用群聊模式后，可以：

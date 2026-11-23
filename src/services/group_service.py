@@ -27,10 +27,6 @@ class GroupService:
         self._announcement_group_id = getattr(config, "ANNOUNCEMENT_GROUP_ID", None)
         self._membership_cache = TTLCache[int, bool](2048, 300)
     
-    def is_group_check_enabled(self) -> bool:
-        """检查是否启用群组验证"""
-        return self._group_check_enabled
-
     @staticmethod
     def _escape_markdown(text: str) -> str:
         if not text:
@@ -128,7 +124,9 @@ class GroupService:
             "✅ 加入群组后，请点击“已加入，重新验证”。"
         )
 
-    def get_join_group_keyboard(self) -> InlineKeyboardMarkup:
+    def get_join_group_keyboard(
+        self, *, retry_callback: str = MEMBERSHIP_RETRY_CALLBACK
+    ) -> InlineKeyboardMarkup:
         """Return a narrow-screen membership recovery keyboard."""
         keyboard = []
         group_link = str(getattr(self.config, "REQUIRED_GROUP_LINK", "")).strip()
@@ -140,7 +138,7 @@ class GroupService:
             [
                 InlineKeyboardButton(
                     "✅ 已加入，重新验证",
-                    callback_data=self.MEMBERSHIP_RETRY_CALLBACK,
+                    callback_data=retry_callback,
                 )
             ]
         )

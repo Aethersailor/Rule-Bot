@@ -55,11 +55,12 @@ services:
       # - DOH_SERVERS=alibaba=https://dns.alidns.com/dns-query,tencent=https://doh.pub/dns-query,cloudflare=https://cloudflare-dns.com/dns-query
       # - NS_DOH_SERVERS=cloudflare=https://cloudflare-dns.com/dns-query,google=https://dns.google/dns-query,quad9=https://dns.quad9.net/dns-query
 
-      # 群组验证 (可选: 要求用户加入指定群组才能私聊使用机器人)
-      # 留空则关闭此功能
+      # 群成员验证（可选）。要求入群的功能共用以下三项配置。
       # - REQUIRED_GROUP_ID=-1002413971610
       # - REQUIRED_GROUP_NAME=Custom_OpenClash_Rules | 交流群
       # - REQUIRED_GROUP_LINK=https://t.me/custom_openclash_rules_group
+      # 普通 Telegram 私聊是否要求入群。省略时，仅在上述三项均有效时要求入群。
+      # - TELEGRAM_PRIVATE_CHAT_REQUIRE_GROUP=false
 
       # 群组工作模式 (可选: 允许机器人在指定群组中直接响应 @提及)
       # 支持逗号分隔多个群组 ID，例如：-1001234567890,-1009876543210
@@ -86,8 +87,10 @@ services:
 
       # Rule-Bot Client Community 入口（可选，默认关闭）
       # 开启后用户可在机器人私聊菜单自行签发、更新和吊销独立 Token。
-      # 必须同时启用上方 REQUIRED_GROUP_*，并持久化 /app/data。
+      # 启用后需持久化 /app/data。Token 签发和重新签发默认要求入群。
+      # 如允许未入群用户签发 Token，将 RULE_BOT_CLIENT_COMMUNITY_TOKEN_REQUIRE_GROUP 设为 false。
       # - RULE_BOT_CLIENT_COMMUNITY_API_ENABLED=true
+      # - RULE_BOT_CLIENT_COMMUNITY_TOKEN_REQUIRE_GROUP=false
       # - RULE_BOT_CLIENT_COMMUNITY_API_PORT=7654
       # - RULE_BOT_CLIENT_COMMUNITY_API_PATH=/api/v1/rule-bot-client/replace-with-another-random-path
       # - RULE_BOT_CLIENT_COMMUNITY_API_BASE_URL=https://rule-bot.example.com

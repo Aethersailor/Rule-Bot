@@ -60,6 +60,9 @@ class Config:
         self.RULE_BOT_CLIENT_COMMUNITY_API_ENABLED = self._parse_bool_env(
             "RULE_BOT_CLIENT_COMMUNITY_API_ENABLED", False
         )
+        self.RULE_BOT_CLIENT_COMMUNITY_TOKEN_REQUIRE_GROUP = self._parse_bool_env(
+            "RULE_BOT_CLIENT_COMMUNITY_TOKEN_REQUIRE_GROUP", True
+        )
         self.RULE_BOT_CLIENT_COMMUNITY_API_HOST = os.getenv(
             "RULE_BOT_CLIENT_COMMUNITY_API_HOST", "0.0.0.0"
         ).strip()
@@ -109,7 +112,7 @@ class Config:
         self.GITHUB_FILE_CACHE_TTL = self._parse_int_env("GITHUB_FILE_CACHE_TTL", 60, min_value=0)
         self.GITHUB_FILE_CACHE_SIZE = self._parse_int_env("GITHUB_FILE_CACHE_SIZE", 4, min_value=0)
 
-        # 群组验证配置（用于私聊模式下验证用户是否在群组中）
+        # 普通私聊和社区 Token 签发共用验证群组
         required_group_id_raw = os.getenv("REQUIRED_GROUP_ID", "").strip()
         self.REQUIRED_GROUP_NAME = os.getenv("REQUIRED_GROUP_NAME", "").strip()
         self.REQUIRED_GROUP_LINK = os.getenv("REQUIRED_GROUP_LINK", "").strip()
@@ -121,6 +124,15 @@ class Config:
             logger.warning("REQUIRED_GROUP_ID 格式无效（原始值不写入日志）")
         if self.REQUIRED_GROUP_ID and not self.GROUP_CHECK_ENABLED:
             logger.warning("群组验证已关闭：REQUIRED_GROUP_NAME 或 REQUIRED_GROUP_LINK 未配置")
+
+        self.TELEGRAM_PRIVATE_CHAT_REQUIRE_GROUP = self._parse_bool_env(
+            "TELEGRAM_PRIVATE_CHAT_REQUIRE_GROUP", self.GROUP_CHECK_ENABLED
+        )
+        if self.TELEGRAM_PRIVATE_CHAT_REQUIRE_GROUP and not self.GROUP_CHECK_ENABLED:
+            raise ValueError(
+                "TELEGRAM_PRIVATE_CHAT_REQUIRE_GROUP requires REQUIRED_GROUP_ID, "
+                "REQUIRED_GROUP_NAME and REQUIRED_GROUP_LINK"
+            )
 
         self._validate_rule_bot_client_config()
         
@@ -255,7 +267,7 @@ class Config:
                 or parsed_base_url.path not in {"", "/"}
             ):
                 raise ValueError("RULE_BOT_CLIENT_COMMUNITY_API_BASE_URL must be an HTTP(S) origin")
-            if not self.GROUP_CHECK_ENABLED:
+            if self.RULE_BOT_CLIENT_COMMUNITY_TOKEN_REQUIRE_GROUP and not self.GROUP_CHECK_ENABLED:
                 raise ValueError(
                     "Rule-Bot Client Community API requires group membership verification"
                 )

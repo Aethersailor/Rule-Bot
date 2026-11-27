@@ -250,7 +250,6 @@ Client API 遇到暂时无法判断的 DNS 结果时，会持久化保存域名�
 | 入口 | 链接 |
 | --- | --- |
 | 🤖 公共实例 | [@asailor_rulebot](https://t.me/asailor_rulebot) |
-| 💬 交流群 | [Custom OpenClash Rules 交流群](https://t.me/custom_openclash_rules_group) |
 | 📄 开源许可 | [GNU Affero General Public License v3.0](LICENSE) |
 
 ---

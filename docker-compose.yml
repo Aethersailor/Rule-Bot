@@ -56,9 +56,10 @@ services:
       # - NS_DOH_SERVERS=cloudflare=https://cloudflare-dns.com/dns-query,google=https://dns.google/dns-query,quad9=https://dns.quad9.net/dns-query
 
       # 群成员验证（可选）。要求入群的功能共用以下三项配置。
-      # - REQUIRED_GROUP_ID=-1002413971610
-      # - REQUIRED_GROUP_NAME=Custom_OpenClash_Rules | 交流群
-      # - REQUIRED_GROUP_LINK=https://t.me/custom_openclash_rules_group
+      # 将以下示例值替换成自建实例使用的群组信息。
+      # - REQUIRED_GROUP_ID=-1001234567890
+      # - REQUIRED_GROUP_NAME=示例交流群
+      # - REQUIRED_GROUP_LINK=https://example.com/group-invite
       # 普通 Telegram 私聊是否要求入群。省略时，仅在上述三项均有效时要求入群。
       # - TELEGRAM_PRIVATE_CHAT_REQUIRE_GROUP=false
 

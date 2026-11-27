@@ -21,8 +21,8 @@ def config():
     return SimpleNamespace(
         GROUP_CHECK_ENABLED=True,
         REQUIRED_GROUP_ID=-100123456,
-        REQUIRED_GROUP_NAME="Custom_OpenClash_Rules | 交流群",
-        REQUIRED_GROUP_LINK="https://t.me/example_group",
+        REQUIRED_GROUP_NAME="Example_Group | 交流群",
+        REQUIRED_GROUP_LINK="https://example.com/group-invite",
         TELEGRAM_PRIVATE_CHAT_REQUIRE_GROUP=True,
         GITHUB_REPO="Aethersailor/Custom_OpenClash_Rules",
         RULE_BOT_CLIENT_COMMUNITY_API_ENABLED=True,
@@ -146,7 +146,7 @@ class MembershipConfigTests(unittest.TestCase):
             self.assertFalse(Config().TELEGRAM_PRIVATE_CHAT_REQUIRE_GROUP)
             os.environ.update(REQUIRED_GROUP_ID="-100123456", REQUIRED_GROUP_NAME="Example")
             self.assertFalse(Config().TELEGRAM_PRIVATE_CHAT_REQUIRE_GROUP)
-            os.environ["REQUIRED_GROUP_LINK"] = "https://t.me/example_group"
+            os.environ["REQUIRED_GROUP_LINK"] = "https://example.com/group-invite"
             os.environ.update(
                 RULE_BOT_CLIENT_COMMUNITY_API_ENABLED="true",
                 RULE_BOT_CLIENT_COMMUNITY_API_BASE_URL="https://example.com",
@@ -194,7 +194,7 @@ class FormattingTests(unittest.TestCase):
 
     def test_group_prompt_does_not_add_backslash_before_pipe(self):
         prompt = GroupService(config(), None).get_join_group_message()
-        self.assertIn(r"Custom\_OpenClash\_Rules | 交流群", prompt)
+        self.assertIn(r"Example\_Group | 交流群", prompt)
         self.assertNotIn(r"\|", prompt)
 
 

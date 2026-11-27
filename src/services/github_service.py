@@ -399,9 +399,9 @@ class GitHubService:
                         comment = f"# add by Rule-Bot Client / Date: {current_date}"
                     else:
                         if description:
-                            comment = f"# {description} / add by Rule-Bot user: {user_name} / Date: {current_date}"
+                            comment = f"# {description} / add by Telegram user: {user_name} / Date: {current_date}"
                         else:
-                            comment = f"# add by Rule-Bot user: {user_name} / Date: {current_date}"
+                            comment = f"# add by Telegram user: {user_name} / Date: {current_date}"
                     
                     rule = f"DOMAIN-SUFFIX,{domain}"
                     
@@ -416,7 +416,7 @@ class GitHubService:
                     if force_add:
                         commit_title = (
                             f"feat(rules): force add direct domain {domain} by Admin "
-                            f"(Rule-Bot user: {user_name})"
+                            f"(Telegram user: {user_name})"
                         )
                     elif source in {
                         "rule_bot_client_private",
@@ -427,7 +427,7 @@ class GitHubService:
                             "(from Rule-Bot Client)"
                         )
                     else:
-                        commit_title = f"feat(rules): add direct domain {domain} by Rule-Bot (user: {user_name})"
+                        commit_title = f"feat(rules): add direct domain {domain} by Telegram Bot (Telegram user: {user_name})"
                     commit_body = description if description else ""
                     full_commit_message = commit_title
                     if commit_body and commit_body.strip():
